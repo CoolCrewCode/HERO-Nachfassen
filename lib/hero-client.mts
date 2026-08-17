@@ -97,8 +97,8 @@ async function heroGraphQL<T>(query: string, variables?: Record<string, unknown>
 }
 
 const PROJECT_MATCHES_QUERY = /* GraphQL */ `
-  query OpenOfferProjectMatches($statuses: [Int], $measure_ids: [Int]) {
-    project_matches(statuses: $statuses, measure_ids: $measure_ids) {
+  query OpenOfferProjectMatches($statuses: [Int], $measure_ids: [Int], $first: Int, $offset: Int) {
+    project_matches(statuses: $statuses, measure_ids: $measure_ids, first: $first, offset: $offset) {
       id
       project_nr
       measure {
@@ -142,19 +142,35 @@ export interface ProjectMatchFilter {
   measureIds?: number[];
 }
 
+const PAGE_SIZE = 200;
+const MAX_PAGES = 20; // Sicherheitsgrenze (= max. 4000 project_matches), gegen Endlosschleifen
+
 /**
  * Holt project_matches samt Kategorie (measure), Status, Angebots-Dokumenten und
  * Logbuch/Notizen (histories). Per Introspection bestätigt: `statuses: [Int]` und
  * `measure_ids: [Int]` filtern serverseitig, damit nicht der ganze Account-Bestand
  * geladen werden muss (HERO hat mehrere Kategorien wie Projekte/Reparaturen/Montagen/Wartung,
  * "measure" bildet das ab).
+ *
+ * HERO liefert standardmäßig nur eine begrenzte Seite (z.B. 50) zurück – deshalb wird hier
+ * mit `first`/`offset` seitenweise geladen, bis eine Seite kleiner als PAGE_SIZE ist.
  */
 export async function fetchProjectMatches(filter?: ProjectMatchFilter): Promise<HeroProjectMatch[]> {
-  const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY, {
-    statuses: filter?.statuses && filter.statuses.length > 0 ? filter.statuses : null,
-    measure_ids: filter?.measureIds && filter.measureIds.length > 0 ? filter.measureIds : null,
-  });
-  return data.project_matches ?? [];
+  const all: HeroProjectMatch[] = [];
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY, {
+      statuses: filter?.statuses && filter.statuses.length > 0 ? filter.statuses : null,
+      measure_ids: filter?.measureIds && filter.measureIds.length > 0 ? filter.measureIds : null,
+      first: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    });
+    const batch = data.project_matches ?? [];
+    all.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+  }
+
+  return all;
 }
 
 // ---------------------------------------------------------------------------
