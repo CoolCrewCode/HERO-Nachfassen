@@ -66,12 +66,78 @@ export function buildBody(input: TemplateInput): string {
   ].join("\n");
 }
 
-export function buildLogbookMarker(sentAtIso: string): string {
-  return `🔔 Nachfass-Mail automatisch verschickt am ${formatDate(sentAtIso)}`;
+// ---------------------------------------------------------------------------
+// Tracking: Marker-Texte, die als HERO-Logbuch-Eintrag (histories) geschrieben werden.
+// ---------------------------------------------------------------------------
+
+export const SENT_MARKER_SUBSTRING = "Nachfass-Mail verschickt";
+export const SKIP_MARKER_SUBSTRING = "Nachfassen übersprungen";
+export const PROPOSED_MARKER_SUBSTRING = "Nachfassen zur Freigabe vorgeschlagen";
+
+export function buildSentMarker(sentAtIso: string): string {
+  return `🔔 ${SENT_MARKER_SUBSTRING} am ${formatDate(sentAtIso)} (nach Freigabe)`;
 }
 
-export const LOGBOOK_MARKER_SUBSTRING = "Nachfass-Mail automatisch verschickt";
+export function buildSkipMarker(sentAtIso: string): string {
+  return `🚫 ${SKIP_MARKER_SUBSTRING} am ${formatDate(sentAtIso)} (manuell entschieden)`;
+}
 
-export function alreadyFollowedUp(match: HeroProjectMatch): boolean {
-  return match.histories.some((h) => (h.custom_text ?? "").includes(LOGBOOK_MARKER_SUBSTRING));
+export function buildProposedMarker(sentAtIso: string): string {
+  return `✉️ ${PROPOSED_MARKER_SUBSTRING} am ${formatDate(sentAtIso)}`;
+}
+
+// Bereits erledigt (verschickt oder bewusst übersprungen) – wird nicht erneut vorgeschlagen.
+export function alreadyHandled(match: HeroProjectMatch): boolean {
+  return match.histories.some((h) => {
+    const text = h.custom_text ?? "";
+    return text.includes(SENT_MARKER_SUBSTRING) || text.includes(SKIP_MARKER_SUBSTRING);
+  });
+}
+
+// Bereits in einer früheren Übersichts-Mail zur Freigabe vorgeschlagen (verhindert, dass
+// dieselbe Anfrage jeden Tag erneut in der Übersichts-Mail auftaucht).
+export function alreadyProposed(match: HeroProjectMatch): boolean {
+  return match.histories.some((h) => (h.custom_text ?? "").includes(PROPOSED_MARKER_SUBSTRING));
+}
+
+// ---------------------------------------------------------------------------
+// Übersichts-/Freigabe-Mail an den Reviewer (z.B. Robert)
+// ---------------------------------------------------------------------------
+
+export interface ReviewCandidate {
+  matchId: string;
+  toName: string | null;
+  toEmail: string;
+  projectNr: string;
+  offer: HeroDocument;
+  sendLink: string;
+  skipLink: string;
+}
+
+export function buildReviewSubject(count: number): string {
+  return `${count} Angebot(e) bereit zum Nachfassen – bitte prüfen`;
+}
+
+export function buildReviewBody(candidates: ReviewCandidate[]): string {
+  const intro = [
+    `Es sind ${candidates.length} Angebot(e) seit mindestens ${process.env.HERO_FOLLOWUP_DAYS ?? 7} Tagen ohne Rückmeldung.`,
+    "Bitte für jedes Angebot entscheiden, ob nachgefasst werden soll (z.B. wenn es zwischenzeitlich schon",
+    "persönlichen Kontakt gab, lieber überspringen).",
+    "",
+  ];
+
+  const blocks = candidates.map((c) => {
+    const name = c.toName ?? c.toEmail;
+    const value = c.offer.value !== null ? formatCurrency(c.offer.value) : "";
+    return [
+      `— Angebot ${c.offer.nr} (Projekt ${c.projectNr})`,
+      `  Kunde: ${name} <${c.toEmail}>`,
+      `  Versendet am: ${formatDate(c.offer.created)}${value ? `, Wert: ${value}` : ""}`,
+      `  ✅ Ja, jetzt nachfassen:  ${c.sendLink}`,
+      `  🚫 Nein, überspringen:   ${c.skipLink}`,
+      "",
+    ].join("\n");
+  });
+
+  return [...intro, ...blocks].join("\n");
 }

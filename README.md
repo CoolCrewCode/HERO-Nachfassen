@@ -1,12 +1,22 @@
 # HERO Angebots-Nachfassen (Netlify Scheduled Function)
 
-Läuft täglich (Standard: 07:00 UTC, siehe `netlify.toml`), holt offene Angebote aus
-HERO Software (GraphQL-API) und verschickt eine Nachfass-Mail per Microsoft Graph
-(Absender `info@kuepper-kaelte.de`), sobald das Angebot seit `HERO_FOLLOWUP_DAYS`
-Tagen (Standard 7) unbeantwortet ist. Bereits angeschriebene Angebote werden über
-einen automatischen Eintrag im HERO-Notizen-/Logbuch-Feld des Projekts erkannt
-(`add_logbook_entry`), damit niemand doppelt kontaktiert wird und der Vermerk auch
-in HERO selbst sichtbar ist.
+Läuft täglich (Standard: 07:00 UTC, siehe `netlify.toml`) und holt offene Angebote aus
+HERO Software (GraphQL-API), die seit `HERO_FOLLOWUP_DAYS` Tagen (Standard 7) unbeantwortet
+sind.
+
+**Kein Angebot wird automatisch verschickt.** Stattdessen bekommt `MAIL_REVIEW_TO`
+(z.B. Robert) eine tägliche Übersichts-Mail mit allen fälligen Angeboten, und für jedes
+einzeln zwei Links:
+
+- ✅ **Ja, jetzt nachfassen** → verschickt die Nachfass-Mail an den Kunden (über Microsoft
+  Graph, Absender `info@kuepper-kaelte.de`) und trägt einen Vermerk in HERO ein.
+- 🚫 **Nein, überspringen** → es wird nichts verschickt, ebenfalls mit Vermerk in HERO, damit
+  dasselbe Angebot nicht erneut vorgeschlagen wird.
+
+So kann jeder Kunde einzeln geprüft werden (z.B. wenn es zwischenzeitlich schon
+persönlichen/telefonischen Kontakt gab), bevor eine Mail rausgeht. Ein Angebot taucht nur
+einmal in der Übersichts-Mail auf – bis eine der beiden Optionen angeklickt wurde, wird es
+nicht erneut vorgeschlagen.
 
 ## Setup
 
@@ -20,8 +30,9 @@ in HERO selbst sichtbar ist.
    - `MS_TENANT_ID` / `MS_CLIENT_ID` / `MS_CLIENT_SECRET`: aus der bereits angelegten
      Entra-ID-App-Registrierung (Application Permission `Mail.Send`, Admin-Zustimmung
      erteilt).
-   - `MAIL_FROM=info@kuepper-kaelte.de`, optional `MAIL_SUMMARY_TO` für eine interne
-     Zusammenfassungs-Mail nach jedem Lauf.
+   - `MAIL_FROM=info@kuepper-kaelte.de`.
+   - `MAIL_REVIEW_TO`: wer die tägliche Freigabe-Mail bekommt und die Ja/Nein-Entscheidung trifft.
+   - `APPROVAL_SECRET`: einmalig einen langen zufälligen Text eintragen (sichert die Freigabe-Links ab).
 
 3. **Discovery-Lauf** (einmalig, um die richtigen HERO-Werte für euren Account zu finden):
    - `HERO_DISCOVERY=true` setzen.
@@ -42,9 +53,11 @@ in HERO selbst sichtbar ist.
    - `HERO_DISCOVERY` wieder auf `false` setzen.
 
 4. Testlauf ohne Mailversand: `DRY_RUN=true` setzen, Function erneut aufrufen und
-   die Zusammenfassung (`checked`/`due`/`sent`/…) im Log prüfen.
+   die Zusammenfassung (`checked`/`due`/`candidatesInReviewMail`/…) im Log prüfen.
 
 5. Env-Vars in Netlify hinterlegen (Site settings → Environment variables) und deployen.
+   `URL` wird von Netlify automatisch gesetzt und für die Freigabe-Links verwendet — dafür
+   ist keine eigene Konfiguration nötig.
 
 ## Wichtig
 
@@ -53,12 +66,17 @@ in HERO selbst sichtbar ist.
   filtert client-seitig. Bei sehr vielen offenen Vorgängen (Function-Limit: 30s
   Laufzeit) hilft der Discovery-Lauf zu sehen, ob es Server-seitige Filter gibt
   (`introspection.projectMatches`).
-- "Schon nachgefasst" wird erkannt, indem die `histories`-Einträge (Notizen/Logbuch)
-  eines project_match nach dem Text "Nachfass-Mail automatisch verschickt" durchsucht
-  werden (siehe [lib/mail-template.mts](lib/mail-template.mts)). Das ist etwas
-  fehleranfälliger als ein echtes Statusfeld (Absprache mit Robert: HERO hat kein
-  eigenes Tag-Feld dafür), aber macht den Vermerk auch für Menschen in HERO sichtbar.
-- E-Mail-Text/Betreff lassen sich über `MAIL_SUBJECT_TEMPLATE` / `MAIL_BODY_TEMPLATE`
-  anpassen (Platzhalter siehe `.env.example`). Der Standardtext entspricht dem mit
-  Robert abgestimmten Entwurf (freundlich, unaufdringlich, klarer Call-to-Action).
+- Tracking läuft komplett über die `histories`-Einträge (Notizen/Logbuch) eines
+  project_match (siehe [lib/mail-template.mts](lib/mail-template.mts)): "zur Freigabe
+  vorgeschlagen", "verschickt" oder "übersprungen". Das ist etwas fehleranfälliger als ein
+  echtes Statusfeld (Absprache mit Robert: HERO hat kein eigenes Tag-Feld dafür), macht den
+  Vermerk aber auch für Menschen in HERO sichtbar.
+- Die Freigabe-Links in der Übersichts-Mail sind mit `APPROVAL_SECRET` signiert (siehe
+  [lib/approval.mts](lib/approval.mts)) — ohne gültige Signatur passiert nichts. Sie sind
+  nicht personengebunden: Wer den Link in der Mail von `MAIL_REVIEW_TO` anklickt, löst die
+  Aktion aus.
+- E-Mail-Text/Betreff der Kunden-Mail lassen sich über `MAIL_SUBJECT_TEMPLATE` /
+  `MAIL_BODY_TEMPLATE` anpassen (Platzhalter siehe `.env.example`). Der Standardtext
+  entspricht dem mit Robert abgestimmten Entwurf (freundlich, unaufdringlich, klarer
+  Call-to-Action).
 - Zeitplan ändern: Cron-Ausdruck in `netlify.toml` anpassen (läuft in UTC).

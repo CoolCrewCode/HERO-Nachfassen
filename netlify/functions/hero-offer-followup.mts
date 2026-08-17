@@ -1,6 +1,14 @@
 import { fetchProjectMatches, addLogbookEntry, introspectSchema, type HeroDocument, type HeroProjectMatch } from "../../lib/hero-client.mts";
 import { sendGraphMail } from "../../lib/graph-mailer.mts";
-import { buildSubject, buildBody, buildLogbookMarker, alreadyFollowedUp } from "../../lib/mail-template.mts";
+import {
+  alreadyHandled,
+  alreadyProposed,
+  buildReviewSubject,
+  buildReviewBody,
+  buildProposedMarker,
+  type ReviewCandidate,
+} from "../../lib/mail-template.mts";
+import { buildApprovalLink } from "../../lib/approval.mts";
 
 // ---------------------------------------------------------------------------
 // Konfiguration über Env-Vars (siehe .env.example)
@@ -88,38 +96,6 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
   });
 }
 
-interface FollowUpResult {
-  projectNr: string;
-  offerNr: string;
-  toEmail: string;
-}
-
-async function sendSummaryMail(results: FollowUpResult[], errors: string[]): Promise<void> {
-  const summaryTo = process.env.MAIL_SUMMARY_TO?.trim();
-  if (!summaryTo || (results.length === 0 && errors.length === 0)) return;
-
-  const lines = [
-    `Nachfass-Lauf abgeschlossen: ${results.length} Mail(s) verschickt.`,
-    "",
-    ...results.map((r) => `- Angebot ${r.offerNr} (Projekt ${r.projectNr}) an ${r.toEmail}`),
-  ];
-
-  if (errors.length > 0) {
-    lines.push("", "Fehler:", ...errors.map((e) => `- ${e}`));
-  }
-
-  try {
-    await sendGraphMail({
-      toEmail: summaryTo,
-      toName: null,
-      subject: `HERO Nachfass-Lauf: ${results.length} Angebot(e) nachgefasst`,
-      body: lines.join("\n"),
-    });
-  } catch (err) {
-    console.error("Interne Zusammenfassungs-Mail konnte nicht verschickt werden:", err);
-  }
-}
-
 export default async (): Promise<Response> => {
   if (!OFFER_DOCUMENT_TYPE && !DISCOVERY_MODE) {
     console.warn(
@@ -150,13 +126,22 @@ export default async (): Promise<Response> => {
     return runDiscovery(matches);
   }
 
+  const reviewTo = process.env.MAIL_REVIEW_TO?.trim();
+  if (!reviewTo) {
+    const msg = "MAIL_REVIEW_TO ist nicht gesetzt – ohne Empfänger kann keine Freigabe-Mail verschickt werden.";
+    console.error(msg);
+    return new Response(JSON.stringify({ error: msg }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   let checked = 0;
   let due = 0;
-  let sent = 0;
-  let skippedAlreadySent = 0;
+  let skippedAlreadyHandled = 0;
+  let skippedAlreadyProposed = 0;
   let skippedNoEmail = 0;
-  const errors: string[] = [];
-  const results: FollowUpResult[] = [];
+  const candidates: ReviewCandidate[] = [];
 
   for (const match of matches) {
     checked++;
@@ -170,8 +155,13 @@ export default async (): Promise<Response> => {
 
     due++;
 
-    if (alreadyFollowedUp(match)) {
-      skippedAlreadySent++;
+    if (alreadyHandled(match)) {
+      skippedAlreadyHandled++;
+      continue;
+    }
+
+    if (alreadyProposed(match)) {
+      skippedAlreadyProposed++;
       continue;
     }
 
@@ -182,43 +172,51 @@ export default async (): Promise<Response> => {
       continue;
     }
 
-    try {
-      if (!DRY_RUN) {
-        const now = new Date().toISOString();
-
-        await sendGraphMail({
-          toEmail: recipient.email,
-          toName: recipient.name,
-          subject: buildSubject({ toName: recipient.name, projectNr: match.project_nr, offer }),
-          body: buildBody({ toName: recipient.name, projectNr: match.project_nr, offer }),
-        });
-
-        await addLogbookEntry(match.id, "Automatisches Nachfassen", buildLogbookMarker(now));
-      }
-      sent++;
-      results.push({ projectNr: match.project_nr, offerNr: offer.nr, toEmail: recipient.email });
-    } catch (err) {
-      const msg = `Fehlgeschlagen für project_match ${match.id} (${offer.nr}): ${err}`;
-      console.error(msg);
-      errors.push(msg);
-    }
+    candidates.push({
+      matchId: match.id,
+      toName: recipient.name,
+      toEmail: recipient.email,
+      projectNr: match.project_nr,
+      offer,
+      sendLink: buildApprovalLink(match.id, offer.nr, "send"),
+      skipLink: buildApprovalLink(match.id, offer.nr, "skip"),
+    });
   }
 
-  if (!DRY_RUN) {
-    await sendSummaryMail(results, errors);
+  let reviewMailSent = false;
+  if (!DRY_RUN && candidates.length > 0) {
+    await sendGraphMail({
+      toEmail: reviewTo,
+      toName: null,
+      subject: buildReviewSubject(candidates.length),
+      body: buildReviewBody(candidates),
+    });
+    reviewMailSent = true;
+
+    // Markiert die Angebote als "zur Freigabe vorgeschlagen", damit sie nicht jeden Tag
+    // erneut in einer neuen Übersichts-Mail auftauchen, solange noch keine Entscheidung fiel.
+    const now = new Date().toISOString();
+    for (const c of candidates) {
+      try {
+        await addLogbookEntry(c.matchId, "Nachfassen vorgeschlagen", buildProposedMarker(now));
+      } catch (err) {
+        console.error(`Konnte 'vorgeschlagen'-Vermerk nicht schreiben für ${c.projectNr}:`, err);
+      }
+    }
   }
 
   const summary = {
     checked,
     due,
-    sent,
-    skippedAlreadySent,
+    candidatesInReviewMail: candidates.length,
+    reviewMailSent,
+    skippedAlreadyHandled,
+    skippedAlreadyProposed,
     skippedNoEmail,
     dryRun: DRY_RUN,
-    errors,
   };
 
-  console.log("HERO Angebots-Nachfassen abgeschlossen:", JSON.stringify(summary));
+  console.log("HERO Angebots-Nachfassen (Übersicht) abgeschlossen:", JSON.stringify(summary));
 
   return new Response(JSON.stringify(summary, null, 2), {
     headers: { "content-type": "application/json" },
