@@ -141,44 +141,34 @@ export async function fetchProjectMatches(statuses?: number[]): Promise<HeroProj
 // Logbuch-Eintrag schreiben (Tracking "schon nachgefasst")
 // ---------------------------------------------------------------------------
 //
-// ANNAHME: Mutationsname und Argumentnamen sind aus der öffentlichen Doku nicht ersichtlich
-// (nur der Name `add_logbook_entry` ist als "häufig genutzte Mutation" gelistet). Diese
-// Signatur ist eine plausible Annahme basierend auf den lesbaren `histories`-Feldern
-// (custom_title, custom_text). VOR PRODUKTIVEINSATZ per `HERO_DISCOVERY=true` (Introspection)
-// prüfen und ggf. Argumentnamen unten anpassen.
+// Per Introspection bestätigt (siehe README): add_logbook_entry nimmt ein einzelnes
+// LogbookEntryInput-Objekt. Relevante Felder: target (Enum, "project_match" für unseren
+// Fall), target_id (Int, die project_match-ID), custom_text (String!). Ein separates
+// Titel-Feld gibt es nicht – weitere optionale Felder (type_code, target_users,
+// role_visibility) werden nicht benötigt.
 
 const ADD_LOGBOOK_ENTRY_MUTATION = /* GraphQL */ `
-  mutation AddLogbookEntry($projectMatchId: ID!, $title: String!, $text: String!) {
-    add_logbook_entry(project_match_id: $projectMatchId, custom_title: $title, custom_text: $text) {
+  mutation AddLogbookEntry($targetId: Int!, $text: String!) {
+    add_logbook_entry(logbook_entry: { target: project_match, target_id: $targetId, custom_text: $text }) {
       id
     }
   }
 `;
 
-export async function addLogbookEntry(
-  projectMatchId: string,
-  title: string,
-  text: string
-): Promise<void> {
+export async function addLogbookEntry(projectMatchId: string, text: string): Promise<void> {
   await heroGraphQL(ADD_LOGBOOK_ENTRY_MUTATION, {
-    projectMatchId,
-    title,
+    targetId: Number(projectMatchId),
     text,
   });
 }
 
-/**
- * Testet die ADD_LOGBOOK_ENTRY_MUTATION-Annahme gegen die echte API, ohne dass ein Fehler
- * geworfen wird. Wird vom Discovery-Modus genutzt, weil HERO Introspection deaktiviert hat
- * und die Argumentnamen sich nicht anders vorab prüfen lassen.
- */
+/** Sanity-Check im Discovery-Modus: schreibt einen klar markierten Testeintrag. */
 export async function testAddLogbookEntry(
   projectMatchId: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     await addLogbookEntry(
       projectMatchId,
-      "Test (HERO-Nachfass-Automatisierung)",
       "🧪 Testeintrag der Nachfass-Automatisierung – kann ignoriert/gelöscht werden."
     );
     return { ok: true };
@@ -311,188 +301,4 @@ export async function introspectSchema(): Promise<{
     allMutationNames: mutationFields.map((f) => f.name).sort(),
     allQueryNames: queryFields.map((f) => f.name).sort(),
   };
-}
-
-// ---------------------------------------------------------------------------
-// Baut den add_logbook_entry-Aufruf automatisch aus der per Introspection ermittelten
-// echten Signatur (statt geratener Argumentnamen) und testet ihn direkt.
-// ---------------------------------------------------------------------------
-
-export interface DynamicLogbookTestResult {
-  ok: boolean;
-  usedArgs: Record<string, string>;
-  unmappedRequiredArgs: string[];
-  allInputFields?: string[];
-  error?: string;
-}
-
-/**
- * Fragt die Felder eines benannten Input-Objekt-Typs ab (z.B. "LogbookEntryInput"),
- * damit wir Mutationen, die ein einzelnes Input-Objekt statt Einzelargumente nehmen,
- * trotzdem automatisch zusammenbauen können.
- */
-async function introspectInputType(typeName: string): Promise<FieldSignature | null> {
-  const query = /* GraphQL */ `
-    query IntrospectInputType($name: String!) {
-      __type(name: $name) {
-        name
-        inputFields {
-          name
-          type {
-            ...TypeRef
-          }
-        }
-      }
-    }
-
-    fragment TypeRef on __Type {
-      kind
-      name
-      ofType {
-        kind
-        name
-        ofType {
-          kind
-          name
-          ofType {
-            kind
-            name
-          }
-        }
-      }
-    }
-  `;
-
-  const data = await heroGraphQL<{
-    __type: { name: string; inputFields: Array<{ name: string; type: IntrospectionTypeRef }> } | null;
-  }>(query, { name: typeName });
-
-  if (!data.__type) return null;
-
-  return {
-    name: data.__type.name,
-    args: data.__type.inputFields.map((f) => `${f.name}: ${stringifyType(f.type)}`),
-  };
-}
-
-function mapFieldsToTestValues(
-  fields: Array<{ name: string; type: string }>,
-  projectMatchId: string
-): { values: Record<string, unknown>; usedArgs: Record<string, string>; unmapped: string[] } {
-  const values: Record<string, unknown> = {};
-  const usedArgs: Record<string, string> = {};
-  const unmapped: string[] = [];
-
-  for (const { name, type } of fields) {
-    const lower = name.toLowerCase();
-    if (lower.includes("id")) {
-      values[name] = /Int/.test(type) ? Number(projectMatchId) : projectMatchId;
-      usedArgs[name] = `→ project_match_id (${type})`;
-    } else if (lower.includes("title")) {
-      values[name] = "Test (HERO-Nachfass-Automatisierung)";
-      usedArgs[name] = "→ Test-Titel";
-    } else if (/text|note|comment|body|content|description|message/.test(lower)) {
-      values[name] = "🧪 Testeintrag der Nachfass-Automatisierung – kann ignoriert/gelöscht werden.";
-      usedArgs[name] = "→ Test-Text";
-    } else if (lower === "target" || lower.endsWith("_type") || lower === "type") {
-      // HERO-Fehlermeldung deutete auf ein Feld "target" hin, das die Ziel-Entität benennt
-      // (z.B. "project_match"). Reiner Rateversuch – falls falsch, verrät die Fehlermeldung
-      // meist die erlaubten Enum-Werte.
-      values[name] = "project_match";
-      usedArgs[name] = "→ Rateversuch: 'project_match'";
-    } else if (type.replace("!", "") === "String") {
-      values[name] = "Test (HERO-Nachfass-Automatisierung)";
-      usedArgs[name] = "→ Test-Text (Fallback, unbekanntes Feld)";
-    } else if (type.endsWith("!")) {
-      unmapped.push(`${name}: ${type}`);
-    }
-  }
-
-  return { values, usedArgs, unmapped };
-}
-
-export async function testAddLogbookEntryDynamic(
-  projectMatchId: string,
-  signature: FieldSignature
-): Promise<DynamicLogbookTestResult> {
-  const parsed = signature.args.map((a) => {
-    const [name, ...rest] = a.split(":");
-    return { name: name.trim(), type: rest.join(":").trim() };
-  });
-
-  // Fall A: genau ein Argument, dessen Typ auf einen Input-Objekt-Typnamen hindeutet
-  // (HERO nennt diese z.B. "LogbookEntryInput") -> dessen Felder introspizieren und
-  // als verschachteltes Objekt befüllen.
-  if (parsed.length === 1 && /Input!?$/.test(parsed[0].type)) {
-    const baseTypeName = parsed[0].type.replace(/!$/, "");
-    const inputType = await introspectInputType(baseTypeName);
-    if (!inputType) {
-      return {
-        ok: false,
-        usedArgs: {},
-        unmappedRequiredArgs: [],
-        error: `Konnte Input-Typ '${baseTypeName}' nicht introspizieren.`,
-      };
-    }
-
-    const innerFields = inputType.args.map((a) => {
-      const [name, ...rest] = a.split(":");
-      return { name: name.trim(), type: rest.join(":").trim() };
-    });
-    const { values, usedArgs, unmapped } = mapFieldsToTestValues(innerFields, projectMatchId);
-
-    if (unmapped.length > 0) {
-      return {
-        ok: false,
-        usedArgs,
-        unmappedRequiredArgs: unmapped,
-        allInputFields: inputType.args,
-        error: `Konnte nicht alle Pflichtfelder in '${baseTypeName}' automatisch befüllen.`,
-      };
-    }
-
-    const argName = parsed[0].name;
-    const mutation = `mutation TestAddLogbookEntryDynamic($input: ${baseTypeName}!) { add_logbook_entry(${argName}: $input) { id } }`;
-
-    try {
-      await heroGraphQL(mutation, { input: values });
-      return { ok: true, usedArgs, unmappedRequiredArgs: [], allInputFields: inputType.args };
-    } catch (err) {
-      return {
-        ok: false,
-        usedArgs,
-        unmappedRequiredArgs: [],
-        allInputFields: inputType.args,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
-
-  // Fall B: mehrere skalare Einzelargumente -> direkt befüllen.
-  const { values, usedArgs, unmapped } = mapFieldsToTestValues(parsed, projectMatchId);
-
-  if (unmapped.length > 0) {
-    return {
-      ok: false,
-      usedArgs,
-      unmappedRequiredArgs: unmapped,
-      error: "Konnte nicht alle Pflichtargumente automatisch befüllen (siehe unmappedRequiredArgs).",
-    };
-  }
-
-  const varDefs = parsed.map(({ name, type }) => `$${name}: ${type}`).join(", ");
-  const callArgs = parsed.map(({ name }) => `${name}: $${name}`).join(", ");
-  const mutation = `mutation TestAddLogbookEntryDynamic(${varDefs}) { add_logbook_entry(${callArgs}) { id } }`;
-
-  try {
-    await heroGraphQL(mutation, values);
-    return { ok: true, usedArgs, unmappedRequiredArgs: [] };
-  } catch (err) {
-    return {
-      ok: false,
-      usedArgs,
-      unmappedRequiredArgs: [],
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
 }

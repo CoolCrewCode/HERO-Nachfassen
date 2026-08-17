@@ -61,7 +61,7 @@ export default async (req: Request): Promise<Response> => {
   const now = new Date().toISOString();
 
   if (action === "skip") {
-    await addLogbookEntry(match.id, "Nachfassen übersprungen", buildSkipMarker(now));
+    await addLogbookEntry(match.id, buildSkipMarker(now));
     return htmlPage(
       "Übersprungen",
       `Für Angebot ${offer.nr} (Projekt ${match.project_nr}) wird nicht nachgefasst. Das ist in HERO vermerkt.`
@@ -83,7 +83,7 @@ export default async (req: Request): Promise<Response> => {
       subject: buildSubject({ toName: recipient.name, projectNr: match.project_nr, offer }),
       body: buildBody({ toName: recipient.name, projectNr: match.project_nr, offer }),
     });
-    await addLogbookEntry(match.id, "Automatisches Nachfassen", buildSentMarker(now));
+    await addLogbookEntry(match.id, buildSentMarker(now));
   } catch (err) {
     return htmlPage("Fehler beim Versand", `Die Mail konnte nicht verschickt werden: ${String(err)}`);
   }
