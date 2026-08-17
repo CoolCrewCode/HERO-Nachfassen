@@ -31,12 +31,20 @@ const OPEN_STATUS_CODES = (process.env.HERO_OPEN_STATUS_CODES ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// HERO-Kategorien ("measure"), z.B. Projekte/Reparaturen/Montagen/Wartung. Nur Angebote
+// aus diesen Kategorien berücksichtigen (kommagetrennte measure-IDs). Leer = alle Kategorien.
+const MEASURE_IDS = (process.env.HERO_MEASURE_IDS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 // customer_documents.type-Wert, der ein Angebot kennzeichnet (z.B. "OFFER" oder "ANGEBOT").
 // Ebenfalls per Discovery-Modus ermitteln.
 const OFFER_DOCUMENT_TYPE = process.env.HERO_OFFER_DOCUMENT_TYPE?.trim() ?? "";
 
 const DISCOVERY_MODE = process.env.HERO_DISCOVERY === "true";
 const DRY_RUN = process.env.DRY_RUN === "true";
+const DEBUG = process.env.DEBUG === "true";
 
 // ---------------------------------------------------------------------------
 
@@ -67,12 +75,16 @@ function recipientOf(match: HeroProjectMatch): { email: string; name: string | n
 async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
   const statusCodes = new Map<string, string>(); // status_code -> name
   const documentTypes = new Set<string>();
+  const measures = new Map<string, string>(); // measure_id -> name/short
 
   for (const match of matches) {
     const status = match.current_project_match_status;
     if (status?.status_code) statusCodes.set(String(status.status_code), status.name);
     for (const doc of match.customer_documents) {
       documentTypes.add(doc.type);
+    }
+    if (match.measure) {
+      measures.set(match.measure.id, match.measure.name ?? match.measure.short ?? match.measure.id);
     }
   }
 
@@ -98,12 +110,15 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
       "Trage passende Werte als HERO_OPEN_STATUS_CODES bzw. HERO_OFFER_DOCUMENT_TYPE ein und setze HERO_DISCOVERY=false.",
       "'gefundene_status_codes' zeigt Code -> Klarname. Nur die Codes für 'offenes Angebot, wartet auf Kunde' in " +
         "HERO_OPEN_STATUS_CODES eintragen (kommagetrennt).",
+      "'gefundene_measures' zeigt id -> Kategoriename (z.B. Montagen/Reparaturen/Wartung/Projekte). Die passende(n) " +
+        "ID(s) in HERO_MEASURE_IDS eintragen (kommagetrennt), damit nur diese Kategorie(n) berücksichtigt werden.",
       "'add_logbook_entry_test.ok' zeigt, ob das Schreiben eines HERO-Logbuch-Eintrags funktioniert. Bei ok:true " +
         `wurde ein Testeintrag geschrieben, den man in HERO beim ersten Projekt (${matches[0]?.project_nr ?? "-"}) ` +
         "im Verlauf/Notizen sieht und löschen kann.",
     ],
     gefundene_status_codes: Object.fromEntries(statusCodes),
     gefundene_dokument_typen: [...documentTypes].sort(),
+    gefundene_measures: Object.fromEntries(measures),
     anzahl_project_matches: matches.length,
     add_logbook_entry_test: addLogbookEntryTest,
     introspection,
@@ -130,13 +145,15 @@ export default async (): Promise<Response> => {
     );
   }
 
-  // Im Discovery-Modus bewusst ungefiltert laden, um alle vorkommenden Status/Dokumenttypen
-  // zu sehen. Im Normalbetrieb serverseitig auf die konfigurierten offenen Status einschränken.
-  const statusFilter = DISCOVERY_MODE ? undefined : OPEN_STATUS_CODES.map(Number);
+  // Im Discovery-Modus bewusst ungefiltert laden, um alle vorkommenden Status/Kategorien
+  // zu sehen. Im Normalbetrieb serverseitig auf Status + Kategorie (measure) einschränken.
+  const filter = DISCOVERY_MODE
+    ? undefined
+    : { statuses: OPEN_STATUS_CODES.map(Number), measureIds: MEASURE_IDS.map(Number) };
 
   let matches: HeroProjectMatch[];
   try {
-    matches = await fetchProjectMatches(statusFilter);
+    matches = await fetchProjectMatches(filter);
   } catch (err) {
     console.error("Fehler beim Laden der HERO-Angebote:", err);
     return new Response(JSON.stringify({ error: String(err) }), {
@@ -161,6 +178,9 @@ export default async (): Promise<Response> => {
 
   let checked = 0;
   let due = 0;
+  let skippedNotOpenStatus = 0;
+  let skippedNoOfferDoc = 0;
+  let skippedTooRecent = 0;
   let skippedAlreadyHandled = 0;
   let skippedAlreadyProposed = 0;
   let skippedNoEmail = 0;
@@ -169,12 +189,33 @@ export default async (): Promise<Response> => {
   for (const match of matches) {
     checked++;
 
-    if (!isOpenStatus(match)) continue;
+    const offerForDebug = latestOfferDocument(match.customer_documents);
+    if (DEBUG) {
+      console.log(
+        `DEBUG ${match.project_nr}: measure=${match.measure?.id} (${match.measure?.name ?? match.measure?.short}) ` +
+          `status=${match.current_project_match_status?.status_code} ` +
+          `(${match.current_project_match_status?.name}) ` +
+          `dokumente=[${match.customer_documents.map((d) => d.type).join(",")}] ` +
+          `angebotGefunden=${!!offerForDebug} ` +
+          (offerForDebug ? `angebotDatum=${offerForDebug.created} tageAlt=${daysSince(offerForDebug.created).toFixed(1)}` : "")
+      );
+    }
+
+    if (!isOpenStatus(match)) {
+      skippedNotOpenStatus++;
+      continue;
+    }
 
     const offer = latestOfferDocument(match.customer_documents);
-    if (!offer) continue;
+    if (!offer) {
+      skippedNoOfferDoc++;
+      continue;
+    }
 
-    if (daysSince(offer.created) < FOLLOWUP_AFTER_DAYS) continue;
+    if (daysSince(offer.created) < FOLLOWUP_AFTER_DAYS) {
+      skippedTooRecent++;
+      continue;
+    }
 
     due++;
 
@@ -233,6 +274,9 @@ export default async (): Promise<Response> => {
     due,
     candidatesInReviewMail: candidates.length,
     reviewMailSent,
+    skippedNotOpenStatus,
+    skippedNoOfferDoc,
+    skippedTooRecent,
     skippedAlreadyHandled,
     skippedAlreadyProposed,
     skippedNoEmail,

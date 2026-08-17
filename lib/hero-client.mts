@@ -24,11 +24,18 @@ export interface HeroPerson {
   email: string | null;
 }
 
+export interface HeroMeasure {
+  id: string;
+  short: string | null;
+  name: string | null;
+}
+
 export interface HeroProjectMatch {
   id: string;
   project_nr: string;
   customer: HeroPerson | null;
   contact: HeroPerson | null;
+  measure: HeroMeasure | null;
   current_project_match_status: {
     status_code: string;
     name: string;
@@ -90,10 +97,15 @@ async function heroGraphQL<T>(query: string, variables?: Record<string, unknown>
 }
 
 const PROJECT_MATCHES_QUERY = /* GraphQL */ `
-  query OpenOfferProjectMatches($statuses: [Int]) {
-    project_matches(statuses: $statuses) {
+  query OpenOfferProjectMatches($statuses: [Int], $measure_ids: [Int]) {
+    project_matches(statuses: $statuses, measure_ids: $measure_ids) {
       id
       project_nr
+      measure {
+        id
+        short
+        name
+      }
       customer {
         id
         first_name
@@ -125,14 +137,22 @@ const PROJECT_MATCHES_QUERY = /* GraphQL */ `
   }
 `;
 
+export interface ProjectMatchFilter {
+  statuses?: number[];
+  measureIds?: number[];
+}
+
 /**
- * Holt project_matches samt Status, Angebots-Dokumenten und Logbuch/Notizen (histories).
- * Per Introspection bestätigt: `statuses: [Int]` filtert serverseitig nach status_code,
- * damit nicht der ganze Account-Bestand geladen werden muss.
+ * Holt project_matches samt Kategorie (measure), Status, Angebots-Dokumenten und
+ * Logbuch/Notizen (histories). Per Introspection bestätigt: `statuses: [Int]` und
+ * `measure_ids: [Int]` filtern serverseitig, damit nicht der ganze Account-Bestand
+ * geladen werden muss (HERO hat mehrere Kategorien wie Projekte/Reparaturen/Montagen/Wartung,
+ * "measure" bildet das ab).
  */
-export async function fetchProjectMatches(statuses?: number[]): Promise<HeroProjectMatch[]> {
+export async function fetchProjectMatches(filter?: ProjectMatchFilter): Promise<HeroProjectMatch[]> {
   const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY, {
-    statuses: statuses && statuses.length > 0 ? statuses : null,
+    statuses: filter?.statuses && filter.statuses.length > 0 ? filter.statuses : null,
+    measure_ids: filter?.measureIds && filter.measureIds.length > 0 ? filter.measureIds : null,
   });
   return data.project_matches ?? [];
 }
