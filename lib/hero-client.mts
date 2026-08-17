@@ -193,26 +193,33 @@ export async function testAddLogbookEntry(
 // ohne dass wir sie raten müssen. Wird vom Discovery-Modus der Function genutzt.
 // ---------------------------------------------------------------------------
 
+// HERO nennt seine Root-Typen nicht "Mutation"/"Query" (sondern z.B. "PartnerMutation"),
+// deshalb über __schema.mutationType/__schema.queryType gehen statt über __type(name: ...)
+// mit geratenem Namen – so funktioniert es unabhängig vom tatsächlichen Typnamen.
 const INTROSPECTION_QUERY = /* GraphQL */ `
   query IntrospectMutationAndQuery {
-    mutationType: __type(name: "Mutation") {
-      fields {
+    __schema {
+      mutationType {
         name
-        args {
+        fields {
           name
-          type {
-            ...TypeRef
+          args {
+            name
+            type {
+              ...TypeRef
+            }
           }
         }
       }
-    }
-    queryType: __type(name: "Query") {
-      fields {
+      queryType {
         name
-        args {
+        fields {
           name
-          type {
-            ...TypeRef
+          args {
+            name
+            type {
+              ...TypeRef
+            }
           }
         }
       }
@@ -253,8 +260,10 @@ interface IntrospectionField {
 }
 
 interface IntrospectionResult {
-  mutationType: { fields: IntrospectionField[] } | null;
-  queryType: { fields: IntrospectionField[] } | null;
+  __schema: {
+    mutationType: { name: string; fields: IntrospectionField[] } | null;
+    queryType: { name: string; fields: IntrospectionField[] } | null;
+  };
 }
 
 function stringifyType(type: IntrospectionTypeRef): string {
@@ -274,6 +283,8 @@ export interface FieldSignature {
  * Mutation-/Query-Feldnamen zurück, falls die Namen doch anders lauten.
  */
 export async function introspectSchema(): Promise<{
+  mutationTypeName: string | null;
+  queryTypeName: string | null;
   addLogbookEntry: FieldSignature | null;
   projectMatches: FieldSignature | null;
   allMutationNames: string[];
@@ -281,8 +292,8 @@ export async function introspectSchema(): Promise<{
 }> {
   const data = await heroGraphQL<IntrospectionResult>(INTROSPECTION_QUERY);
 
-  const mutationFields = data.mutationType?.fields ?? [];
-  const queryFields = data.queryType?.fields ?? [];
+  const mutationFields = data.__schema.mutationType?.fields ?? [];
+  const queryFields = data.__schema.queryType?.fields ?? [];
 
   const toSignature = (f: IntrospectionField): FieldSignature => ({
     name: f.name,
@@ -290,6 +301,8 @@ export async function introspectSchema(): Promise<{
   });
 
   return {
+    mutationTypeName: data.__schema.mutationType?.name ?? null,
+    queryTypeName: data.__schema.queryType?.name ?? null,
     addLogbookEntry: mutationFields.find((f) => f.name === "add_logbook_entry")
       ? toSignature(mutationFields.find((f) => f.name === "add_logbook_entry")!)
       : null,
@@ -299,4 +312,74 @@ export async function introspectSchema(): Promise<{
     allMutationNames: mutationFields.map((f) => f.name).sort(),
     allQueryNames: queryFields.map((f) => f.name).sort(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Baut den add_logbook_entry-Aufruf automatisch aus der per Introspection ermittelten
+// echten Signatur (statt geratener Argumentnamen) und testet ihn direkt.
+// ---------------------------------------------------------------------------
+
+export interface DynamicLogbookTestResult {
+  ok: boolean;
+  usedArgs: Record<string, string>;
+  unmappedRequiredArgs: string[];
+  error?: string;
+}
+
+export async function testAddLogbookEntryDynamic(
+  projectMatchId: string,
+  signature: FieldSignature
+): Promise<DynamicLogbookTestResult> {
+  const parsed = signature.args.map((a) => {
+    const [name, ...rest] = a.split(":");
+    return { name: name.trim(), type: rest.join(":").trim() };
+  });
+
+  const variables: Record<string, unknown> = {};
+  const usedArgs: Record<string, string> = {};
+  const unmappedRequiredArgs: string[] = [];
+
+  for (const { name, type } of parsed) {
+    const lower = name.toLowerCase();
+    if (lower.includes("id")) {
+      variables[name] = projectMatchId;
+      usedArgs[name] = "→ project_match_id";
+    } else if (lower.includes("title")) {
+      variables[name] = "Test (HERO-Nachfass-Automatisierung)";
+      usedArgs[name] = "→ Test-Titel";
+    } else if (/text|note|comment|body|content|description|message/.test(lower)) {
+      variables[name] = "🧪 Testeintrag der Nachfass-Automatisierung – kann ignoriert/gelöscht werden.";
+      usedArgs[name] = "→ Test-Text";
+    } else if (type.replace("!", "") === "String") {
+      variables[name] = "Test (HERO-Nachfass-Automatisierung)";
+      usedArgs[name] = "→ Test-Text (Fallback, unbekanntes Argument)";
+    } else if (type.endsWith("!")) {
+      unmappedRequiredArgs.push(`${name}: ${type}`);
+    }
+  }
+
+  if (unmappedRequiredArgs.length > 0) {
+    return {
+      ok: false,
+      usedArgs,
+      unmappedRequiredArgs,
+      error: "Konnte nicht alle Pflichtargumente automatisch befüllen (siehe unmappedRequiredArgs).",
+    };
+  }
+
+  const varDefs = parsed.map(({ name, type }) => `$${name}: ${type}`).join(", ");
+  const callArgs = parsed.map(({ name }) => `${name}: $${name}`).join(", ");
+  const mutation = `mutation TestAddLogbookEntryDynamic(${varDefs}) { add_logbook_entry(${callArgs}) { id } }`;
+
+  try {
+    await heroGraphQL(mutation, variables);
+    return { ok: true, usedArgs, unmappedRequiredArgs: [] };
+  } catch (err) {
+    return {
+      ok: false,
+      usedArgs,
+      unmappedRequiredArgs: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }

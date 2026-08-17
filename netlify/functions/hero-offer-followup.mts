@@ -3,6 +3,7 @@ import {
   addLogbookEntry,
   introspectSchema,
   testAddLogbookEntry,
+  testAddLogbookEntryDynamic,
   type HeroDocument,
   type HeroProjectMatch,
 } from "../../lib/hero-client.mts";
@@ -83,14 +84,25 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
     introspection = { error: String(err) };
   }
 
-  // HERO hat Introspection oft deaktiviert (introspection.addLogbookEntry bleibt dann null) –
-  // deshalb zusätzlich ein echter, klar markierter Testaufruf gegen das erste project_match.
+  // Erst mit der (bisher geratenen) festen Signatur testen; falls Introspection jetzt echte
+  // Argumentnamen liefert und der feste Test fehlschlägt, zusätzlich automatisch mit der
+  // per Introspection ermittelten echten Signatur testen.
   let addLogbookEntryTest: { ok: true } | { ok: false; error: string } | { ok: null; reason: string } = {
     ok: null,
     reason: "Kein project_match vorhanden, um zu testen.",
   };
+  let addLogbookEntryDynamicTest: Awaited<ReturnType<typeof testAddLogbookEntryDynamic>> | null = null;
+
   if (matches.length > 0) {
     addLogbookEntryTest = await testAddLogbookEntry(matches[0].id);
+
+    if (
+      addLogbookEntryTest.ok === false &&
+      "addLogbookEntry" in introspection &&
+      introspection.addLogbookEntry
+    ) {
+      addLogbookEntryDynamicTest = await testAddLogbookEntryDynamic(matches[0].id, introspection.addLogbookEntry);
+    }
   }
 
   const summary = {
@@ -100,14 +112,19 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
       "'gefundene_status_codes' zeigt Code -> Klarname. Nur die Codes für 'offenes Angebot, wartet auf Kunde' in " +
         "HERO_OPEN_STATUS_CODES eintragen (kommagetrennt).",
       "'add_logbook_entry_test.ok' zeigt, ob die Notiz-Mutation mit der aktuellen Annahme in lib/hero-client.mts " +
-        "(ADD_LOGBOOK_ENTRY_MUTATION) funktioniert hat. Bei ok:false steht die Fehlermeldung von HERO dabei, meist " +
-        "mit Hinweis auf den richtigen Argumentnamen. Bei ok:true wurde ein Testeintrag geschrieben, den man in " +
-        `HERO beim ersten Projekt (${matches[0]?.project_nr ?? "-"}) im Verlauf/Notizen sieht und löschen kann.`,
+        "(ADD_LOGBOOK_ENTRY_MUTATION) funktioniert hat.",
+      "Falls add_logbook_entry_test.ok=false: 'add_logbook_entry_dynamic_test' zeigt das Ergebnis eines zweiten " +
+        "Versuchs mit den per Introspection ermittelten echten Argumentnamen (usedArgs zeigt, welcher echte " +
+        "Name wofür verwendet wurde). Bei ok:true muss ADD_LOGBOOK_ENTRY_MUTATION in lib/hero-client.mts auf diese " +
+        "Argumentnamen umgestellt werden.",
+      `Bei ok:true (in einem der beiden Tests) wurde ein Testeintrag geschrieben, den man in HERO beim ersten ` +
+        `Projekt (${matches[0]?.project_nr ?? "-"}) im Verlauf/Notizen sieht und löschen kann.`,
     ],
     gefundene_status_codes: Object.fromEntries(statusCodes),
     gefundene_dokument_typen: [...documentTypes].sort(),
     anzahl_project_matches: matches.length,
     add_logbook_entry_test: addLogbookEntryTest,
+    add_logbook_entry_dynamic_test: addLogbookEntryDynamicTest,
     introspection,
   };
 
