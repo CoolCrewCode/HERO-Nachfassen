@@ -289,13 +289,19 @@ export default async (): Promise<Response> => {
 
     // Markiert die Angebote als "zur Freigabe vorgeschlagen", damit sie nicht jeden Tag
     // erneut in einer neuen Übersichts-Mail auftauchen, solange noch keine Entscheidung fiel.
+    // Parallel (statt nacheinander) schreiben, sonst droht bei vielen Kandidaten das
+    // 30-Sekunden-Zeitlimit von Netlify Functions (bei 111 Kandidaten sequenziell: ~30s).
     const now = new Date().toISOString();
-    for (const c of candidates) {
-      try {
-        await addLogbookEntry(c.matchId, buildProposedMarker(now));
-      } catch (err) {
-        console.error(`Konnte 'vorgeschlagen'-Vermerk nicht schreiben für ${c.projectNr}:`, err);
-      }
+    const MARKER_WRITE_CONCURRENCY = 10;
+    for (let i = 0; i < candidates.length; i += MARKER_WRITE_CONCURRENCY) {
+      const batch = candidates.slice(i, i + MARKER_WRITE_CONCURRENCY);
+      await Promise.all(
+        batch.map((c) =>
+          addLogbookEntry(c.matchId, buildProposedMarker(now)).catch((err) => {
+            console.error(`Konnte 'vorgeschlagen'-Vermerk nicht schreiben für ${c.projectNr}:`, err);
+          })
+        )
+      );
     }
   }
 
