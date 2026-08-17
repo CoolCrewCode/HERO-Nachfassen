@@ -1,0 +1,11 @@
+{
+  "name": "hero-offer-followup",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Netlify Scheduled Function: automatisches Nachfassen offener HERO-Angebote nach X Tagen, Versand über Microsoft Graph",
+  "devDependencies": {
+    "@netlify/functions": "^2.8.2",
+    "typescript": "^5.6.3"
+  }
+}

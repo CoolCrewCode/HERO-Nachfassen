@@ -1,0 +1,7 @@
+[build]
+  functions = "netlify/functions"
+
+# Läuft täglich um 07:00 UTC (= 08:00/09:00 Uhr deutscher Zeit, je nach Sommer-/Winterzeit).
+# Cron läuft immer in UTC – bei Bedarf anpassen: https://docs.netlify.com/build/functions/scheduled-functions/
+[functions."hero-offer-followup"]
+  schedule = "0 7 * * *"
