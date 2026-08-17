@@ -168,6 +168,26 @@ export async function addLogbookEntry(
   });
 }
 
+/**
+ * Testet die ADD_LOGBOOK_ENTRY_MUTATION-Annahme gegen die echte API, ohne dass ein Fehler
+ * geworfen wird. Wird vom Discovery-Modus genutzt, weil HERO Introspection deaktiviert hat
+ * und die Argumentnamen sich nicht anders vorab prüfen lassen.
+ */
+export async function testAddLogbookEntry(
+  projectMatchId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await addLogbookEntry(
+      projectMatchId,
+      "Test (HERO-Nachfass-Automatisierung)",
+      "🧪 Testeintrag der Nachfass-Automatisierung – kann ignoriert/gelöscht werden."
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Introspection – hilft, echte Schema-Details (Mutation-Args, Query-Filter) zu ermitteln,
 // ohne dass wir sie raten müssen. Wird vom Discovery-Modus der Function genutzt.

@@ -1,4 +1,11 @@
-import { fetchProjectMatches, addLogbookEntry, introspectSchema, type HeroDocument, type HeroProjectMatch } from "../../lib/hero-client.mts";
+import {
+  fetchProjectMatches,
+  addLogbookEntry,
+  introspectSchema,
+  testAddLogbookEntry,
+  type HeroDocument,
+  type HeroProjectMatch,
+} from "../../lib/hero-client.mts";
 import { sendGraphMail } from "../../lib/graph-mailer.mts";
 import {
   alreadyHandled,
@@ -58,12 +65,12 @@ function recipientOf(match: HeroProjectMatch): { email: string; name: string | n
 }
 
 async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
-  const statusCodes = new Set<string>();
+  const statusCodes = new Map<string, string>(); // status_code -> name
   const documentTypes = new Set<string>();
 
   for (const match of matches) {
-    const code = match.current_project_match_status?.status_code;
-    if (code) statusCodes.add(code);
+    const status = match.current_project_match_status;
+    if (status?.status_code) statusCodes.set(String(status.status_code), status.name);
     for (const doc of match.customer_documents) {
       documentTypes.add(doc.type);
     }
@@ -76,17 +83,31 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
     introspection = { error: String(err) };
   }
 
+  // HERO hat Introspection oft deaktiviert (introspection.addLogbookEntry bleibt dann null) –
+  // deshalb zusätzlich ein echter, klar markierter Testaufruf gegen das erste project_match.
+  let addLogbookEntryTest: { ok: true } | { ok: false; error: string } | { ok: null; reason: string } = {
+    ok: null,
+    reason: "Kein project_match vorhanden, um zu testen.",
+  };
+  if (matches.length > 0) {
+    addLogbookEntryTest = await testAddLogbookEntry(matches[0].id);
+  }
+
   const summary = {
     mode: "discovery",
     hinweise: [
       "Trage passende Werte als HERO_OPEN_STATUS_CODES bzw. HERO_OFFER_DOCUMENT_TYPE ein und setze HERO_DISCOVERY=false.",
-      "Prüfe 'introspection.addLogbookEntry' gegen die Annahme in lib/hero-client.mts (ADD_LOGBOOK_ENTRY_MUTATION) " +
-        "und passe die Argumentnamen dort an, falls sie abweichen.",
-      "Prüfe 'introspection.projectMatches' auf Filter-/Pagination-Argumente, um die Query bei Bedarf serverseitig einzuschränken.",
+      "'gefundene_status_codes' zeigt Code -> Klarname. Nur die Codes für 'offenes Angebot, wartet auf Kunde' in " +
+        "HERO_OPEN_STATUS_CODES eintragen (kommagetrennt).",
+      "'add_logbook_entry_test.ok' zeigt, ob die Notiz-Mutation mit der aktuellen Annahme in lib/hero-client.mts " +
+        "(ADD_LOGBOOK_ENTRY_MUTATION) funktioniert hat. Bei ok:false steht die Fehlermeldung von HERO dabei, meist " +
+        "mit Hinweis auf den richtigen Argumentnamen. Bei ok:true wurde ein Testeintrag geschrieben, den man in " +
+        `HERO beim ersten Projekt (${matches[0]?.project_nr ?? "-"}) im Verlauf/Notizen sieht und löschen kann.`,
     ],
-    gefundene_status_codes: [...statusCodes].sort(),
+    gefundene_status_codes: Object.fromEntries(statusCodes),
     gefundene_dokument_typen: [...documentTypes].sort(),
     anzahl_project_matches: matches.length,
+    add_logbook_entry_test: addLogbookEntryTest,
     introspection,
   };
 
