@@ -322,6 +322,7 @@ export interface DynamicLogbookTestResult {
   ok: boolean;
   usedArgs: Record<string, string>;
   unmappedRequiredArgs: string[];
+  allInputFields?: string[];
   error?: string;
 }
 
@@ -393,6 +394,12 @@ function mapFieldsToTestValues(
     } else if (/text|note|comment|body|content|description|message/.test(lower)) {
       values[name] = "🧪 Testeintrag der Nachfass-Automatisierung – kann ignoriert/gelöscht werden.";
       usedArgs[name] = "→ Test-Text";
+    } else if (lower === "target" || lower.endsWith("_type") || lower === "type") {
+      // HERO-Fehlermeldung deutete auf ein Feld "target" hin, das die Ziel-Entität benennt
+      // (z.B. "project_match"). Reiner Rateversuch – falls falsch, verrät die Fehlermeldung
+      // meist die erlaubten Enum-Werte.
+      values[name] = "project_match";
+      usedArgs[name] = "→ Rateversuch: 'project_match'";
     } else if (type.replace("!", "") === "String") {
       values[name] = "Test (HERO-Nachfass-Automatisierung)";
       usedArgs[name] = "→ Test-Text (Fallback, unbekanntes Feld)";
@@ -439,6 +446,7 @@ export async function testAddLogbookEntryDynamic(
         ok: false,
         usedArgs,
         unmappedRequiredArgs: unmapped,
+        allInputFields: inputType.args,
         error: `Konnte nicht alle Pflichtfelder in '${baseTypeName}' automatisch befüllen.`,
       };
     }
@@ -448,12 +456,13 @@ export async function testAddLogbookEntryDynamic(
 
     try {
       await heroGraphQL(mutation, { input: values });
-      return { ok: true, usedArgs, unmappedRequiredArgs: [] };
+      return { ok: true, usedArgs, unmappedRequiredArgs: [], allInputFields: inputType.args };
     } catch (err) {
       return {
         ok: false,
         usedArgs,
         unmappedRequiredArgs: [],
+        allInputFields: inputType.args,
         error: err instanceof Error ? err.message : String(err),
       };
     }
