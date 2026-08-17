@@ -2,6 +2,8 @@ import {
   fetchProjectMatches,
   addLogbookEntry,
   introspectSchema,
+  introspectObjectTypeFields,
+  fetchProjectTypes,
   testAddLogbookEntry,
   type HeroDocument,
   type HeroProjectMatch,
@@ -95,6 +97,27 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
     introspection = { error: String(err) };
   }
 
+  // "Montagen" tauchte nicht unter den measures auf – vermutlich eine andere Dimension
+  // (project_matches(type_ids: [Int])). Rückgabetyp von project_matches introspizieren, um
+  // dessen lesbare Felder zu sehen (z.B. ein "type"/"project_type"-Feld), und project_types
+  // direkt abfragen (Feldnamen id/name sind eine Annahme, Fehler zeigt die echten Namen).
+  let projectMatchFields: string[] | { error: string } | null = null;
+  if ("projectMatches" in introspection && introspection.projectMatches?.returnType) {
+    const baseTypeName = introspection.projectMatches.returnType.replace(/[![\]]/g, "");
+    try {
+      projectMatchFields = await introspectObjectTypeFields(baseTypeName);
+    } catch (err) {
+      projectMatchFields = { error: String(err) };
+    }
+  }
+
+  let projectTypes: Array<{ id: string; name: string }> | { error: string };
+  try {
+    projectTypes = await fetchProjectTypes();
+  } catch (err) {
+    projectTypes = { error: String(err) };
+  }
+
   // Sanity-Check: schreibt einen Testeintrag über die (jetzt bestätigte) echte Mutation.
   let addLogbookEntryTest: { ok: true } | { ok: false; error: string } | { ok: null; reason: string } = {
     ok: null,
@@ -112,6 +135,9 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
         "HERO_OPEN_STATUS_CODES eintragen (kommagetrennt).",
       "'gefundene_measures' zeigt id -> Kategoriename (z.B. Montagen/Reparaturen/Wartung/Projekte). Die passende(n) " +
         "ID(s) in HERO_MEASURE_IDS eintragen (kommagetrennt), damit nur diese Kategorie(n) berücksichtigt werden.",
+      "Falls 'Montagen' nicht unter gefundene_measures auftaucht: 'project_types' zeigt eine alternative Liste " +
+        "(id -> Name) – project_matches(type_ids: [Int]) filtert darüber. 'project_match_fields' zeigt alle " +
+        "lesbaren Felder eines project_match, falls dort ein anderes Feld für die Kategorie zuständig ist.",
       "'add_logbook_entry_test.ok' zeigt, ob das Schreiben eines HERO-Logbuch-Eintrags funktioniert. Bei ok:true " +
         `wurde ein Testeintrag geschrieben, den man in HERO beim ersten Projekt (${matches[0]?.project_nr ?? "-"}) ` +
         "im Verlauf/Notizen sieht und löschen kann.",
@@ -119,6 +145,8 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
     gefundene_status_codes: Object.fromEntries(statusCodes),
     gefundene_dokument_typen: [...documentTypes].sort(),
     gefundene_measures: Object.fromEntries(measures),
+    project_types: projectTypes,
+    project_match_fields: projectMatchFields,
     anzahl_project_matches: matches.length,
     add_logbook_entry_test: addLogbookEntryTest,
     introspection,

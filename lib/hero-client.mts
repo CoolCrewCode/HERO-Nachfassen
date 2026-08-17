@@ -230,6 +230,9 @@ const INTROSPECTION_QUERY = /* GraphQL */ `
               ...TypeRef
             }
           }
+          type {
+            ...TypeRef
+          }
         }
       }
     }
@@ -266,6 +269,7 @@ interface IntrospectionTypeRef {
 interface IntrospectionField {
   name: string;
   args: Array<{ name: string; type: IntrospectionTypeRef }>;
+  type?: IntrospectionTypeRef;
 }
 
 interface IntrospectionResult {
@@ -284,6 +288,7 @@ function stringifyType(type: IntrospectionTypeRef): string {
 export interface FieldSignature {
   name: string;
   args: string[];
+  returnType?: string;
 }
 
 /**
@@ -307,6 +312,7 @@ export async function introspectSchema(): Promise<{
   const toSignature = (f: IntrospectionField): FieldSignature => ({
     name: f.name,
     args: f.args.map((a) => `${a.name}: ${stringifyType(a.type)}`),
+    returnType: f.type ? stringifyType(f.type) : undefined,
   });
 
   return {
@@ -321,4 +327,42 @@ export async function introspectSchema(): Promise<{
     allMutationNames: mutationFields.map((f) => f.name).sort(),
     allQueryNames: queryFields.map((f) => f.name).sort(),
   };
+}
+
+/** Listet die lesbaren Feldnamen eines beliebigen Objekt-Typs (z.B. Rückgabetyp einer Query). */
+export async function introspectObjectTypeFields(typeName: string): Promise<string[] | null> {
+  const query = /* GraphQL */ `
+    query IntrospectObjectFields($name: String!) {
+      __type(name: $name) {
+        name
+        fields {
+          name
+        }
+      }
+    }
+  `;
+  const data = await heroGraphQL<{ __type: { name: string; fields: Array<{ name: string }> } | null }>(
+    query,
+    { name: typeName }
+  );
+  if (!data.__type) return null;
+  return data.__type.fields.map((f) => f.name);
+}
+
+/**
+ * project_types (Kategorien wie "Projekte"/"Reparaturen"/"Montagen"/"Wartung") – vermutlich
+ * die Dimension hinter project_matches(type_ids: [Int]). Feldnamen sind eine Annahme (id, name);
+ * schlägt die Query fehl, zeigt die Fehlermeldung meist die richtigen Feldnamen.
+ */
+export async function fetchProjectTypes(): Promise<Array<{ id: string; name: string }>> {
+  const query = /* GraphQL */ `
+    query ProjectTypesList {
+      project_types {
+        id
+        name
+      }
+    }
+  `;
+  const data = await heroGraphQL<{ project_types: Array<{ id: string; name: string }> }>(query);
+  return data.project_types ?? [];
 }
