@@ -90,8 +90,8 @@ async function heroGraphQL<T>(query: string, variables?: Record<string, unknown>
 }
 
 const PROJECT_MATCHES_QUERY = /* GraphQL */ `
-  query OpenOfferProjectMatches {
-    project_matches {
+  query OpenOfferProjectMatches($statuses: [Int]) {
+    project_matches(statuses: $statuses) {
       id
       project_nr
       customer {
@@ -126,15 +126,14 @@ const PROJECT_MATCHES_QUERY = /* GraphQL */ `
 `;
 
 /**
- * Holt alle project_matches samt Status, Angebots-Dokumenten und Logbuch/Notizen (histories).
- *
- * ACHTUNG: Die HERO-GraphQL-Doku dokumentiert öffentlich keine Filter-/Pagination-Argumente
- * für project_matches. Bei sehr vielen Projekten in eurem HERO-Account lohnt es sich, per
- * Introspection (siehe `introspectSchema`) zu prüfen, ob es z.B. Filterargumente gibt, um
- * die Query serverseitig einzuschränken statt client-seitig zu filtern.
+ * Holt project_matches samt Status, Angebots-Dokumenten und Logbuch/Notizen (histories).
+ * Per Introspection bestätigt: `statuses: [Int]` filtert serverseitig nach status_code,
+ * damit nicht der ganze Account-Bestand geladen werden muss.
  */
-export async function fetchProjectMatches(): Promise<HeroProjectMatch[]> {
-  const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY);
+export async function fetchProjectMatches(statuses?: number[]): Promise<HeroProjectMatch[]> {
+  const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY, {
+    statuses: statuses && statuses.length > 0 ? statuses : null,
+  });
   return data.project_matches ?? [];
 }
 
@@ -326,6 +325,85 @@ export interface DynamicLogbookTestResult {
   error?: string;
 }
 
+/**
+ * Fragt die Felder eines benannten Input-Objekt-Typs ab (z.B. "LogbookEntryInput"),
+ * damit wir Mutationen, die ein einzelnes Input-Objekt statt Einzelargumente nehmen,
+ * trotzdem automatisch zusammenbauen können.
+ */
+async function introspectInputType(typeName: string): Promise<FieldSignature | null> {
+  const query = /* GraphQL */ `
+    query IntrospectInputType($name: String!) {
+      __type(name: $name) {
+        name
+        inputFields {
+          name
+          type {
+            ...TypeRef
+          }
+        }
+      }
+    }
+
+    fragment TypeRef on __Type {
+      kind
+      name
+      ofType {
+        kind
+        name
+        ofType {
+          kind
+          name
+          ofType {
+            kind
+            name
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await heroGraphQL<{
+    __type: { name: string; inputFields: Array<{ name: string; type: IntrospectionTypeRef }> } | null;
+  }>(query, { name: typeName });
+
+  if (!data.__type) return null;
+
+  return {
+    name: data.__type.name,
+    args: data.__type.inputFields.map((f) => `${f.name}: ${stringifyType(f.type)}`),
+  };
+}
+
+function mapFieldsToTestValues(
+  fields: Array<{ name: string; type: string }>,
+  projectMatchId: string
+): { values: Record<string, unknown>; usedArgs: Record<string, string>; unmapped: string[] } {
+  const values: Record<string, unknown> = {};
+  const usedArgs: Record<string, string> = {};
+  const unmapped: string[] = [];
+
+  for (const { name, type } of fields) {
+    const lower = name.toLowerCase();
+    if (lower.includes("id")) {
+      values[name] = /Int/.test(type) ? Number(projectMatchId) : projectMatchId;
+      usedArgs[name] = `→ project_match_id (${type})`;
+    } else if (lower.includes("title")) {
+      values[name] = "Test (HERO-Nachfass-Automatisierung)";
+      usedArgs[name] = "→ Test-Titel";
+    } else if (/text|note|comment|body|content|description|message/.test(lower)) {
+      values[name] = "🧪 Testeintrag der Nachfass-Automatisierung – kann ignoriert/gelöscht werden.";
+      usedArgs[name] = "→ Test-Text";
+    } else if (type.replace("!", "") === "String") {
+      values[name] = "Test (HERO-Nachfass-Automatisierung)";
+      usedArgs[name] = "→ Test-Text (Fallback, unbekanntes Feld)";
+    } else if (type.endsWith("!")) {
+      unmapped.push(`${name}: ${type}`);
+    }
+  }
+
+  return { values, usedArgs, unmapped };
+}
+
 export async function testAddLogbookEntryDynamic(
   projectMatchId: string,
   signature: FieldSignature
@@ -335,34 +413,60 @@ export async function testAddLogbookEntryDynamic(
     return { name: name.trim(), type: rest.join(":").trim() };
   });
 
-  const variables: Record<string, unknown> = {};
-  const usedArgs: Record<string, string> = {};
-  const unmappedRequiredArgs: string[] = [];
+  // Fall A: genau ein Argument, dessen Typ auf einen Input-Objekt-Typnamen hindeutet
+  // (HERO nennt diese z.B. "LogbookEntryInput") -> dessen Felder introspizieren und
+  // als verschachteltes Objekt befüllen.
+  if (parsed.length === 1 && /Input!?$/.test(parsed[0].type)) {
+    const baseTypeName = parsed[0].type.replace(/!$/, "");
+    const inputType = await introspectInputType(baseTypeName);
+    if (!inputType) {
+      return {
+        ok: false,
+        usedArgs: {},
+        unmappedRequiredArgs: [],
+        error: `Konnte Input-Typ '${baseTypeName}' nicht introspizieren.`,
+      };
+    }
 
-  for (const { name, type } of parsed) {
-    const lower = name.toLowerCase();
-    if (lower.includes("id")) {
-      variables[name] = projectMatchId;
-      usedArgs[name] = "→ project_match_id";
-    } else if (lower.includes("title")) {
-      variables[name] = "Test (HERO-Nachfass-Automatisierung)";
-      usedArgs[name] = "→ Test-Titel";
-    } else if (/text|note|comment|body|content|description|message/.test(lower)) {
-      variables[name] = "🧪 Testeintrag der Nachfass-Automatisierung – kann ignoriert/gelöscht werden.";
-      usedArgs[name] = "→ Test-Text";
-    } else if (type.replace("!", "") === "String") {
-      variables[name] = "Test (HERO-Nachfass-Automatisierung)";
-      usedArgs[name] = "→ Test-Text (Fallback, unbekanntes Argument)";
-    } else if (type.endsWith("!")) {
-      unmappedRequiredArgs.push(`${name}: ${type}`);
+    const innerFields = inputType.args.map((a) => {
+      const [name, ...rest] = a.split(":");
+      return { name: name.trim(), type: rest.join(":").trim() };
+    });
+    const { values, usedArgs, unmapped } = mapFieldsToTestValues(innerFields, projectMatchId);
+
+    if (unmapped.length > 0) {
+      return {
+        ok: false,
+        usedArgs,
+        unmappedRequiredArgs: unmapped,
+        error: `Konnte nicht alle Pflichtfelder in '${baseTypeName}' automatisch befüllen.`,
+      };
+    }
+
+    const argName = parsed[0].name;
+    const mutation = `mutation TestAddLogbookEntryDynamic($input: ${baseTypeName}!) { add_logbook_entry(${argName}: $input) { id } }`;
+
+    try {
+      await heroGraphQL(mutation, { input: values });
+      return { ok: true, usedArgs, unmappedRequiredArgs: [] };
+    } catch (err) {
+      return {
+        ok: false,
+        usedArgs,
+        unmappedRequiredArgs: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 
-  if (unmappedRequiredArgs.length > 0) {
+  // Fall B: mehrere skalare Einzelargumente -> direkt befüllen.
+  const { values, usedArgs, unmapped } = mapFieldsToTestValues(parsed, projectMatchId);
+
+  if (unmapped.length > 0) {
     return {
       ok: false,
       usedArgs,
-      unmappedRequiredArgs,
+      unmappedRequiredArgs: unmapped,
       error: "Konnte nicht alle Pflichtargumente automatisch befüllen (siehe unmappedRequiredArgs).",
     };
   }
@@ -372,7 +476,7 @@ export async function testAddLogbookEntryDynamic(
   const mutation = `mutation TestAddLogbookEntryDynamic(${varDefs}) { add_logbook_entry(${callArgs}) { id } }`;
 
   try {
-    await heroGraphQL(mutation, variables);
+    await heroGraphQL(mutation, values);
     return { ok: true, usedArgs, unmappedRequiredArgs: [] };
   } catch (err) {
     return {

@@ -149,9 +149,13 @@ export default async (): Promise<Response> => {
     );
   }
 
+  // Im Discovery-Modus bewusst ungefiltert laden, um alle vorkommenden Status/Dokumenttypen
+  // zu sehen. Im Normalbetrieb serverseitig auf die konfigurierten offenen Status einschränken.
+  const statusFilter = DISCOVERY_MODE ? undefined : OPEN_STATUS_CODES.map(Number);
+
   let matches: HeroProjectMatch[];
   try {
-    matches = await fetchProjectMatches();
+    matches = await fetchProjectMatches(statusFilter);
   } catch (err) {
     console.error("Fehler beim Laden der HERO-Angebote:", err);
     return new Response(JSON.stringify({ error: String(err) }), {
