@@ -64,7 +64,9 @@ function latestOfferDocument(docs: HeroDocument[]): HeroDocument | null {
 function isOpenStatus(match: HeroProjectMatch): boolean {
   if (OPEN_STATUS_CODES.length === 0) return true; // ungefiltert, solange nicht konfiguriert
   const code = match.current_project_match_status?.status_code;
-  return !!code && OPEN_STATUS_CODES.includes(code);
+  // HERO liefert status_code als Zahl, HERO_OPEN_STATUS_CODES ist eine Liste von Strings –
+  // deshalb hier explizit als String vergleichen (sonst schlägt der Vergleich immer fehl).
+  return code !== undefined && code !== null && OPEN_STATUS_CODES.includes(String(code));
 }
 
 function recipientOf(match: HeroProjectMatch): { email: string; name: string | null } | null {
