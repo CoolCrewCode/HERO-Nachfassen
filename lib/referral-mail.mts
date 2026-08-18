@@ -22,7 +22,9 @@ export function buildReferralMailBody(customerName: string | null, code: string,
     "",
     `Ihr persönlicher Empfehlungscode: ${code}`,
     "",
-    "Die von Ihnen empfohlene Person kann direkt hier Kontakt zu uns aufnehmen (der Code ist schon eingetragen):",
+    "Leiten Sie dazu einfach diesen Link an die Person weiter, die Sie empfehlen möchten (z.B. per " +
+      "WhatsApp oder SMS) – Ihr Code ist dort schon automatisch eingetragen, die Person muss nur noch " +
+      "kurz ihre Kontaktdaten hinterlassen:",
     landingUrl,
     "",
     "Vielen Dank und viele Grüße",

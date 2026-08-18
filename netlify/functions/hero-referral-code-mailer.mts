@@ -116,7 +116,7 @@ export default async (): Promise<Response> => {
     candidates.push({
       recipient: { email: recipient.email, name: recipient.name, nr: recipient.nr },
       code,
-      landingUrl: `${getBaseUrl()}/.netlify/functions/hero-referral-landing?code=${encodeURIComponent(code)}`,
+      landingUrl: `${getBaseUrl()}/empfehlung?code=${encodeURIComponent(code)}`,
     });
   }
 

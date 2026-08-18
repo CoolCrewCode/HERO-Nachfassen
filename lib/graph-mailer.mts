@@ -55,6 +55,8 @@ export interface GraphMailInput {
   toName: string | null;
   subject: string;
   body: string;
+  /** "Text" (Standard) oder "HTML", z.B. um einen Link hinter einem Linktext zu verstecken. */
+  bodyType?: "Text" | "HTML";
 }
 
 export async function sendGraphMail(input: GraphMailInput): Promise<void> {
@@ -72,7 +74,7 @@ export async function sendGraphMail(input: GraphMailInput): Promise<void> {
       body: JSON.stringify({
         message: {
           subject: input.subject,
-          body: { contentType: "Text", content: input.body },
+          body: { contentType: input.bodyType ?? "Text", content: input.body },
           toRecipients: [
             {
               emailAddress: { address: input.toEmail, name: input.toName ?? undefined },

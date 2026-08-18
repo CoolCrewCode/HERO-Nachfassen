@@ -10,3 +10,11 @@
 # gleichzeitig auf HERO zugreift).
 [functions."hero-referral-code-mailer"]
   schedule = "0 8 * * *"
+
+# Kurzer, aufgeräumter Link für die Empfehlungs-Landingpage statt der technischen
+# .netlify/functions/...-URL – leichter zu lesen, kopieren und per WhatsApp o.ä. weiterzuleiten.
+# Ergebnis: https://<site>/empfehlung?code=KK-1234
+[[redirects]]
+  from = "/empfehlung"
+  to = "/.netlify/functions/hero-referral-landing"
+  status = 200
