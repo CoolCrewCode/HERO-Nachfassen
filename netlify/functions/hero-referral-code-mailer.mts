@@ -27,8 +27,11 @@ const DEBUG = process.env.REFERRAL_DEBUG === "true";
 // Blobs-Lesezugriffe ("schon verschickt?") sind leichtgewichtig und können hoch parallel laufen.
 const CHECK_CONCURRENCY = 40;
 // Echter Mailversand ist schwerer (Microsoft-Graph-API) – niedrigere Parallelität, um kein
-// Rate-Limiting zu riskieren.
-const SEND_CONCURRENCY = 10;
+// Rate-Limiting zu riskieren. Microsoft Graph begrenzt gleichzeitige sendMail-Anfragen pro
+// Postfach recht knapp ("MailboxConcurrency limit", HTTP 429) – 10 war hier zu hoch und führte
+// beim ersten Livegang zu vielen Fehlschlägen. sendGraphMail wiederholt zwar automatisch bei 429,
+// aber eine niedrigere Grundparallelität vermeidet die Drosselung von vornherein.
+const SEND_CONCURRENCY = 3;
 
 function daysSince(iso: string): number {
   return (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24);

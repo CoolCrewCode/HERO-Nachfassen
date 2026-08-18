@@ -59,34 +59,56 @@ export interface GraphMailInput {
   bodyType?: "Text" | "HTML";
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Microsoft Graph begrenzt, wie viele gleichzeitige sendMail-Anfragen ein einzelnes Postfach
+// verträgt ("MailboxConcurrency limit", HTTP 429). Bei Massenversand (z.B. Empfehlungscode-Mailer)
+// wird dieses Limit leicht erreicht. Retry mit Backoff (unter Beachtung von Retry-After) fängt das
+// ab, statt die Mail als endgültig fehlgeschlagen zu werten.
+const MAX_RETRIES = 3;
+
 export async function sendGraphMail(input: GraphMailInput): Promise<void> {
   const mailFrom = requireEnv("MAIL_FROM");
-  const accessToken = await getAccessToken();
 
-  const res = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailFrom)}/sendMail`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        message: {
-          subject: input.subject,
-          body: { contentType: input.bodyType ?? "Text", content: input.body },
-          toRecipients: [
-            {
-              emailAddress: { address: input.toEmail, name: input.toName ?? undefined },
-            },
-          ],
+  for (let attempt = 0; ; attempt++) {
+    const accessToken = await getAccessToken();
+
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailFrom)}/sendMail`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
         },
-        saveToSentItems: true,
-      }),
-    }
-  );
+        body: JSON.stringify({
+          message: {
+            subject: input.subject,
+            body: { contentType: input.bodyType ?? "Text", content: input.body },
+            toRecipients: [
+              {
+                emailAddress: { address: input.toEmail, name: input.toName ?? undefined },
+              },
+            ],
+          },
+          saveToSentItems: true,
+        }),
+      }
+    );
 
-  if (!res.ok) {
+    if (res.ok) return;
+
+    if (res.status === 429 && attempt < MAX_RETRIES) {
+      const retryAfterHeader = Number(res.headers.get("retry-after"));
+      const waitMs = Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+        ? Math.min(retryAfterHeader * 1000, 8000)
+        : 1000 * 2 ** attempt;
+      await sleep(waitMs);
+      continue;
+    }
+
     const body = await res.text().catch(() => "");
     throw new Error(`Microsoft Graph sendMail fehlgeschlagen (HTTP ${res.status}): ${body}`);
   }
