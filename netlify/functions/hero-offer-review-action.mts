@@ -8,7 +8,7 @@ import {
   alreadySent,
   alreadySkipped,
 } from "../../lib/mail-template.mts";
-import { verifySignature, type ApprovalAction } from "../../lib/approval.mts";
+import { verifySignature, buildDashboardLink, type ApprovalAction } from "../../lib/approval.mts";
 
 function escapeHtml(text: string): string {
   return text
@@ -19,6 +19,17 @@ function escapeHtml(text: string): string {
 }
 
 function htmlPage(title: string, bodyHtml: string): Response {
+  // Rückweg zur Übersichtsseite auf jeder Seite, damit man nach einer Aktion nicht manuell
+  // zur alten Mail zurück und die Übersicht selbst neu laden muss – ein Klick reicht, und die
+  // Übersichtsseite wird bei jedem Aufruf frisch aus HERO neu geladen (zeigt also sofort den
+  // aktuellen Stand, inklusive der gerade getroffenen Entscheidung).
+  let backLink = "";
+  try {
+    backLink = `<p><a href="${buildDashboardLink()}">← Zurück zur Übersicht</a></p>`;
+  } catch {
+    // APPROVAL_SECRET fehlt o.ä. – dann eben ohne Rücklink, der Rest der Seite bleibt nutzbar.
+  }
+
   const body = `<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><title>${title}</title>
 <style>
@@ -29,8 +40,9 @@ function htmlPage(title: string, bodyHtml: string): Response {
   .btn{display:inline-block;padding:0.6rem 1.2rem;background:#1a7f37;color:#fff;text-decoration:none;
        border-radius:6px;font-weight:bold}
   .btn:hover{background:#146c2e}
+  .back{margin-top:2rem;font-size:0.9rem}
 </style>
-</head><body><h1>${title}</h1>${bodyHtml}</body></html>`;
+</head><body><h1>${title}</h1>${bodyHtml}<div class="back">${backLink}</div></body></html>`;
   return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
