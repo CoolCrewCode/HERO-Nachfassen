@@ -24,7 +24,11 @@ const MAX_INVOICE_AGE_DAYS = Number(process.env.REFERRAL_MAX_INVOICE_AGE_DAYS ??
 
 const DRY_RUN = process.env.REFERRAL_DRY_RUN === "true";
 const DEBUG = process.env.REFERRAL_DEBUG === "true";
-const CONCURRENCY = 10;
+// Blobs-Lesezugriffe ("schon verschickt?") sind leichtgewichtig und können hoch parallel laufen.
+const CHECK_CONCURRENCY = 40;
+// Echter Mailversand ist schwerer (Microsoft-Graph-API) – niedrigere Parallelität, um kein
+// Rate-Limiting zu riskieren.
+const SEND_CONCURRENCY = 10;
 
 function daysSince(iso: string): number {
   return (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24);
@@ -129,14 +133,14 @@ export default async (): Promise<Response> => {
 
   // Phase 2: "schon verschickt?" für alle eligible-Kandidaten parallel/gebündelt prüfen, statt
   // nacheinander (sonst dominiert bei vielen Kandidaten allein diese Prüfung die Laufzeit).
-  const alreadySentFlags = await mapInBatches(eligible, CONCURRENCY, (c) => wasReferralCodeSent(c.recipient.nr));
+  const alreadySentFlags = await mapInBatches(eligible, CHECK_CONCURRENCY, (c) => wasReferralCodeSent(c.recipient.nr));
   const candidates = eligible.filter((_, i) => !alreadySentFlags[i]);
   const skippedAlreadySent = eligible.length - candidates.length;
 
   // Phase 3: verschicken, ebenfalls parallel/gebündelt.
   let sent = 0;
   if (!DRY_RUN) {
-    const results = await mapInBatches(candidates, CONCURRENCY, (c) =>
+    const results = await mapInBatches(candidates, SEND_CONCURRENCY, (c) =>
       sendGraphMail({
         toEmail: c.recipient.email,
         toName: c.recipient.name,
