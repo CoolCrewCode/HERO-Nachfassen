@@ -5,16 +5,20 @@ import { buildReferralCode } from "../../lib/referral.mts";
 import { buildReferralMailSubject, buildReferralMailBody } from "../../lib/referral-mail.mts";
 import { wasReferralCodeSent, markReferralCodeSent } from "../../lib/referral-store.mts";
 
-// Status-Codes, bei denen eine Rechnung realistisch schon existiert (aus dem HERO-Discovery-Lauf
-// des Nachfass-Systems bekannt: 1150="Kundenrechnung", 2000="Abgeschlossen"). Bei Bedarf per
-// HERO_INVOICED_STATUS_CODES überschreiben.
-const INVOICED_STATUS_CODES = (process.env.HERO_INVOICED_STATUS_CODES ?? "1150,2000")
+// Kein Status-Filter: Status-Codes sind offenbar pro Kategorie/Pipeline unterschiedlich (siehe
+// Nachfass-System, wo 801 nur innerhalb der Klima/Montagen-Pipeline galt) – "hat eine Rechnung"
+// lässt sich daher nicht zuverlässig über einen festen Status-Code für ALLE Kategorien abbilden.
+// Stattdessen wird direkt anhand von customer_documents.type === "invoice" erkannt, über alle
+// Kategorien/Status hinweg. Optional lässt sich über HERO_INVOICED_STATUS_CODES trotzdem wieder
+// ein Status-Filter aktivieren (z.B. für Performance bei sehr großem Bestand).
+const INVOICED_STATUS_CODES = (process.env.HERO_INVOICED_STATUS_CODES ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean)
   .map(Number);
 
 const DRY_RUN = process.env.REFERRAL_DRY_RUN === "true";
+const DEBUG = process.env.REFERRAL_DEBUG === "true";
 
 function recipientOf(match: HeroProjectMatch): { email: string; name: string | null; nr: string | null } | null {
   const person: HeroPerson | null = match.customer ?? match.contact;
@@ -26,7 +30,9 @@ function recipientOf(match: HeroProjectMatch): { email: string; name: string | n
 export default async (): Promise<Response> => {
   let matches: HeroProjectMatch[];
   try {
-    matches = await fetchProjectMatches({ statuses: INVOICED_STATUS_CODES });
+    matches = await fetchProjectMatches(
+      INVOICED_STATUS_CODES.length > 0 ? { statuses: INVOICED_STATUS_CODES } : undefined
+    );
   } catch (err) {
     console.error("Fehler beim Laden der HERO-Projekte:", err);
     return new Response(JSON.stringify({ error: String(err) }), {
@@ -46,6 +52,15 @@ export default async (): Promise<Response> => {
     checked++;
 
     const hasInvoice = match.customer_documents.some((d) => d.type === "invoice");
+
+    if (DEBUG) {
+      console.log(
+        `DEBUG ${match.project_nr}: measure=${match.measure?.name ?? match.measure?.short} ` +
+          `status=${match.current_project_match_status?.status_code} (${match.current_project_match_status?.name}) ` +
+          `dokumente=[${match.customer_documents.map((d) => d.type).join(",")}] hatRechnung=${hasInvoice}`
+      );
+    }
+
     if (!hasInvoice) {
       skippedNoInvoice++;
       continue;

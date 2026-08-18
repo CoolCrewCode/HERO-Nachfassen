@@ -87,10 +87,13 @@ Stand, auch älterer, bereits gemeldeter Angebote.
 
 # Empfehlungsprogramm (Kunden-werben-Kunden)
 
-Läuft täglich (Standard: 08:00 UTC), findet Kunden mit neuer Rechnung
-(`HERO_INVOICED_STATUS_CODES`) und verschickt ihnen einmalig ihren persönlichen
-Empfehlungscode (`KK-<HERO-Kundennummer>`) samt Link zur Empfehlungs-Landingpage und Hinweis
-auf die Prämie (`REFERRAL_PREMIUM_EUR`, Standard 50€).
+Läuft täglich (Standard: 08:00 UTC), findet Kunden mit neuer Rechnung (erkannt direkt anhand
+der `customer_documents`, nicht über einen Status-Code – Status-Pipelines unterscheiden sich
+offenbar je Kategorie, siehe `HERO_INVOICED_STATUS_CODES` in `.env.example`) und verschickt
+ihnen einmalig ihren persönlichen Empfehlungscode (`KK-<HERO-Kundennummer>`) samt Link zur
+Empfehlungs-Landingpage und Hinweis auf die Prämie (`REFERRAL_PREMIUM_EUR`, Standard 50€) —
+der Kunde entscheidet später, ob er die Prämie bar oder als Rabatt auf die nächste Wartung
+möchte (auf der Übersichtsseite von Robert festgehalten, sobald der Kunde sich entschieden hat).
 
 **Ablauf:**
 
