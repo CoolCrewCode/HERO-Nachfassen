@@ -24,7 +24,7 @@ const MAX_INVOICE_AGE_DAYS = Number(process.env.REFERRAL_MAX_INVOICE_AGE_DAYS ??
 
 const DRY_RUN = process.env.REFERRAL_DRY_RUN === "true";
 const DEBUG = process.env.REFERRAL_DEBUG === "true";
-const SEND_CONCURRENCY = 5;
+const CONCURRENCY = 10;
 
 function daysSince(iso: string): number {
   return (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24);
@@ -43,7 +43,16 @@ function recipientOf(match: HeroProjectMatch): { email: string; name: string | n
   return { email: person.email, name, nr: person.nr };
 }
 
-interface Candidate {
+async function mapInBatches<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    results.push(...(await Promise.all(batch.map(fn))));
+  }
+  return results;
+}
+
+interface EligibleMatch {
   recipient: { email: string; name: string | null; nr: string };
   code: string;
   landingUrl: string;
@@ -66,10 +75,13 @@ export default async (): Promise<Response> => {
   let checked = 0;
   let skippedNoInvoice = 0;
   let skippedTooOld = 0;
-  let skippedAlreadySent = 0;
   let skippedNoEmail = 0;
   let skippedNoCustomerNr = 0;
-  const candidates: Candidate[] = [];
+
+  // Phase 1: rein synchron über die schon geladenen Daten filtern (kein Netzwerk-I/O, also
+  // schnell), noch OHNE die "schon verschickt?"-Prüfung (die braucht einen Netlify-Blobs-Zugriff
+  // pro Kandidat und wird deshalb erst in Phase 2 parallel/gebündelt gemacht).
+  const eligible: EligibleMatch[] = [];
 
   for (const match of matches) {
     checked++;
@@ -107,43 +119,38 @@ export default async (): Promise<Response> => {
       continue;
     }
 
-    if (await wasReferralCodeSent(recipient.nr)) {
-      skippedAlreadySent++;
-      continue;
-    }
-
     const code = buildReferralCode(recipient.nr);
-    candidates.push({
+    eligible.push({
       recipient: { email: recipient.email, name: recipient.name, nr: recipient.nr },
       code,
       landingUrl: `${getBaseUrl()}/empfehlung?code=${encodeURIComponent(code)}`,
     });
   }
 
+  // Phase 2: "schon verschickt?" für alle eligible-Kandidaten parallel/gebündelt prüfen, statt
+  // nacheinander (sonst dominiert bei vielen Kandidaten allein diese Prüfung die Laufzeit).
+  const alreadySentFlags = await mapInBatches(eligible, CONCURRENCY, (c) => wasReferralCodeSent(c.recipient.nr));
+  const candidates = eligible.filter((_, i) => !alreadySentFlags[i]);
+  const skippedAlreadySent = eligible.length - candidates.length;
+
+  // Phase 3: verschicken, ebenfalls parallel/gebündelt.
   let sent = 0;
   if (!DRY_RUN) {
-    // Parallel in Batches verschicken, sonst droht bei vielen Kandidaten das 30-Sekunden-
-    // Zeitlimit von Netlify Functions (siehe dieselbe Lösung beim Nachfass-System).
-    for (let i = 0; i < candidates.length; i += SEND_CONCURRENCY) {
-      const batch = candidates.slice(i, i + SEND_CONCURRENCY);
-      const results = await Promise.all(
-        batch.map((c) =>
-          sendGraphMail({
-            toEmail: c.recipient.email,
-            toName: c.recipient.name,
-            subject: buildReferralMailSubject(),
-            body: buildReferralMailBody(c.recipient.name, c.code, c.landingUrl),
-          })
-            .then(() => markReferralCodeSent(c.recipient.nr))
-            .then(() => true)
-            .catch((err) => {
-              console.error(`Empfehlungscode-Mail fehlgeschlagen für Kunde ${c.recipient.nr}:`, err);
-              return false;
-            })
-        )
-      );
-      sent += results.filter(Boolean).length;
-    }
+    const results = await mapInBatches(candidates, CONCURRENCY, (c) =>
+      sendGraphMail({
+        toEmail: c.recipient.email,
+        toName: c.recipient.name,
+        subject: buildReferralMailSubject(),
+        body: buildReferralMailBody(c.recipient.name, c.code, c.landingUrl),
+      })
+        .then(() => markReferralCodeSent(c.recipient.nr))
+        .then(() => true)
+        .catch((err) => {
+          console.error(`Empfehlungscode-Mail fehlgeschlagen für Kunde ${c.recipient.nr}:`, err);
+          return false;
+        })
+    );
+    sent = results.filter(Boolean).length;
   } else {
     sent = candidates.length;
   }
