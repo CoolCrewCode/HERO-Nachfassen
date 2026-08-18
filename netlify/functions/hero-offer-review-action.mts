@@ -74,7 +74,11 @@ export default async (req: Request): Promise<Response> => {
     return htmlPage(
       "Nicht gefunden",
       "<p>Dieses Projekt wurde in HERO nicht gefunden. Das passiert meist, wenn es zwischenzeitlich bereits " +
-        "geschlossen/archiviert wurde — dann ist ohnehin keine Nachfass-Mail mehr nötig, es ist also alles in Ordnung.</p>"
+        "geschlossen/archiviert wurde — dann ist ohnehin keine Nachfass-Mail mehr nötig, es ist also alles in Ordnung.</p>" +
+        `<p style="color:#888;font-size:0.8rem">Debug: gesucht wurde matchId=${escapeHtml(matchId)} ` +
+        `(als Zahl: ${matchIdNum}). Die ids-Filter-Abfrage lieferte ${matches.length} Ergebnis(se) zurück` +
+        (matches.length > 0 ? `: [${matches.map((m) => escapeHtml(m.id)).join(", ")}]` : "") +
+        `.</p>`
     );
   }
 
