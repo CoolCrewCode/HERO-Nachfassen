@@ -45,7 +45,10 @@ export function buildBody(input: TemplateInput): string {
   const phoneLine = process.env.COMPANY_PHONE
     ? `Sie erreichen uns unter ${process.env.COMPANY_PHONE} oder ganz einfach direkt auf diese E-Mail.`
     : "Antworten Sie gerne direkt auf diese E-Mail.";
-  const signOff = process.env.MAIL_SIGNATURE?.trim() || process.env.COMPANY_NAME || "Ihr Team";
+  // Das Netlify-Eingabefeld für Env-Vars akzeptiert offenbar keine echten Zeilenumbrüche beim
+  // Einfügen – deshalb hier literales "\n" (Backslash + n) als Zeilenumbruch-Ersatz zulassen.
+  const signOff =
+    process.env.MAIL_SIGNATURE?.trim().replaceAll("\\n", "\n") || process.env.COMPANY_NAME || "Ihr Team";
 
   return [
     `${greeting},`,
