@@ -159,12 +159,15 @@ export async function fetchProjectMatches(filter?: ProjectMatchFilter): Promise<
   const all: HeroProjectMatch[] = [];
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY, {
-      statuses: filter?.statuses && filter.statuses.length > 0 ? filter.statuses : null,
-      measure_ids: filter?.measureIds && filter.measureIds.length > 0 ? filter.measureIds : null,
-      first: PAGE_SIZE,
-      offset: page * PAGE_SIZE,
-    });
+    // WICHTIG: statuses/measure_ids nur mitschicken, wenn wirklich gefiltert werden soll.
+    // Explizit `null` zu senden hat HERO offenbar als "Status/Kategorie ist null" interpretiert
+    // (= trifft nie zu, liefert dann grundsätzlich 0 Ergebnisse), statt es als "kein Filter" zu
+    // behandeln. Deshalb die Variablen bei fehlendem Filter komplett weglassen.
+    const variables: Record<string, unknown> = { first: PAGE_SIZE, offset: page * PAGE_SIZE };
+    if (filter?.statuses && filter.statuses.length > 0) variables.statuses = filter.statuses;
+    if (filter?.measureIds && filter.measureIds.length > 0) variables.measure_ids = filter.measureIds;
+
+    const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY, variables);
     const batch = data.project_matches ?? [];
     all.push(...batch);
     if (batch.length < PAGE_SIZE) break;
