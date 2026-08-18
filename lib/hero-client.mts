@@ -146,8 +146,12 @@ export interface ProjectMatchFilter {
   ids?: number[];
 }
 
-const PAGE_SIZE = 500;
-const MAX_PAGES = 20; // Sicherheitsgrenze (= max. 10000 project_matches), gegen Endlosschleifen
+// HERO begrenzt die Abfrage-Komplexität pro Seite (Fehler ab ca. 50000) – abhängig davon, wie
+// viele verschachtelte Felder (Dokumente/Notizen) die einzelnen Projekte gerade haben, also nicht
+// exakt vorhersehbar. 200 war der zuverlässig getestete Wert, ein Versuch mit 500 ist bereits
+// einmal fehlgeschlagen ("54000"). Deshalb bewusst konservativ bei 200 bleiben.
+const PAGE_SIZE = 200;
+const MAX_PAGES = 20; // Sicherheitsgrenze (= max. 4000 project_matches), gegen Endlosschleifen
 
 /**
  * Holt project_matches samt Kategorie (measure), Status, Angebots-Dokumenten und
