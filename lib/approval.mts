@@ -87,8 +87,12 @@ function referralActionPayload(id: string, field: string, value: string): string
   return `referral:${id}:${field}:${value}`;
 }
 
-/** Link, der auf der Übersichtsseite direkt den Status/Prämienstatus einer Empfehlung ändert. */
-export function buildReferralActionLink(id: string, field: "status" | "premiumStatus", value: string): string {
+/** Link, der auf der Übersichtsseite direkt Status/Prämienstatus/Prämienwahl einer Empfehlung ändert. */
+export function buildReferralActionLink(
+  id: string,
+  field: "status" | "premiumStatus" | "rewardType",
+  value: string
+): string {
   const params = new URLSearchParams({
     id,
     field,

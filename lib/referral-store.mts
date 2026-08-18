@@ -11,6 +11,8 @@ const SUBMISSION_PREFIX = "submission:";
 
 export type ReferralStatus = "eingegangen" | "lead_angelegt" | "auftrag" | "abgelehnt";
 export type PremiumStatus = "offen" | "faellig" | "ausgezahlt" | "entfaellt";
+// Wahl des werbenden Kunden, sobald die Prämie fällig wird. null = noch nicht gefragt/entschieden.
+export type RewardType = "bar" | "wartungsrabatt";
 
 export interface ReferralSubmission {
   id: string;
@@ -23,6 +25,7 @@ export interface ReferralSubmission {
   message: string;
   status: ReferralStatus;
   premiumStatus: PremiumStatus;
+  rewardType: RewardType | null;
 }
 
 function store() {
@@ -50,7 +53,7 @@ export async function getSubmission(id: string): Promise<ReferralSubmission | nu
 
 export async function updateSubmission(
   id: string,
-  patch: Partial<Pick<ReferralSubmission, "status" | "premiumStatus">>
+  patch: Partial<Pick<ReferralSubmission, "status" | "premiumStatus" | "rewardType">>
 ): Promise<ReferralSubmission | null> {
   const existing = await getSubmission(id);
   if (!existing) return null;

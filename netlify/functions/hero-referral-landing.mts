@@ -85,6 +85,7 @@ export default async (req: Request): Promise<Response> => {
     message,
     status: "eingegangen",
     premiumStatus: "offen",
+    rewardType: null,
   };
 
   try {

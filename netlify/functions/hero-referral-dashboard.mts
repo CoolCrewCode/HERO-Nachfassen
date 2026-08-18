@@ -3,6 +3,7 @@ import {
   updateSubmission,
   type ReferralStatus,
   type PremiumStatus,
+  type RewardType,
 } from "../../lib/referral-store.mts";
 import {
   verifyReferralDashboardKey,
@@ -44,6 +45,12 @@ const PREMIUM_LABELS: Record<PremiumStatus, string> = {
 const STATUS_ORDER: ReferralStatus[] = ["eingegangen", "lead_angelegt", "auftrag", "abgelehnt"];
 const PREMIUM_ORDER: PremiumStatus[] = ["offen", "faellig", "ausgezahlt", "entfaellt"];
 
+const REWARD_LABELS: Record<RewardType, string> = {
+  bar: "💶 Bar-Prämie",
+  wartungsrabatt: "🔧 Wartungsrabatt",
+};
+const REWARD_ORDER: RewardType[] = ["bar", "wartungsrabatt"];
+
 export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
 
@@ -54,11 +61,16 @@ export default async (req: Request): Promise<Response> => {
   const sig = url.searchParams.get("sig");
 
   if (actionId && field && value && sig) {
-    if ((field !== "status" && field !== "premiumStatus") || !verifyReferralActionSignature(actionId, field, value, sig)) {
+    const validField = field === "status" || field === "premiumStatus" || field === "rewardType";
+    if (!validField || !verifyReferralActionSignature(actionId, field, value, sig)) {
       return new Response("Ungültiger Link", { status: 403 });
     }
     try {
-      await updateSubmission(actionId, { [field]: value } as Partial<{ status: ReferralStatus; premiumStatus: PremiumStatus }>);
+      await updateSubmission(actionId, { [field]: value } as Partial<{
+        status: ReferralStatus;
+        premiumStatus: PremiumStatus;
+        rewardType: RewardType;
+      }>);
     } catch (err) {
       console.error("Konnte Empfehlungsstatus nicht aktualisieren:", err);
     }
@@ -97,6 +109,10 @@ export default async (req: Request): Promise<Response> => {
       const premiumButtons = PREMIUM_ORDER.filter((p) => p !== s.premiumStatus)
         .map((p) => `<a class="chip" href="${buildReferralActionLink(s.id, "premiumStatus", p)}">${PREMIUM_LABELS[p]}</a>`)
         .join(" ");
+      const rewardButtons = REWARD_ORDER.filter((r) => r !== s.rewardType)
+        .map((r) => `<a class="chip" href="${buildReferralActionLink(s.id, "rewardType", r)}">${REWARD_LABELS[r]}</a>`)
+        .join(" ");
+      const rewardLabel = s.rewardType ? REWARD_LABELS[s.rewardType] : "Noch keine Wahl";
 
       return `<tr>
         <td>${escapeHtml(formatDate(s.createdAt))}</td>
@@ -105,6 +121,7 @@ export default async (req: Request): Promise<Response> => {
             ${s.message ? `<div class="muted">"${escapeHtml(s.message)}"</div>` : ""}</td>
         <td><strong>${STATUS_LABELS[s.status]}</strong><div class="chips">${statusButtons}</div></td>
         <td><strong>${PREMIUM_LABELS[s.premiumStatus]}</strong><div class="chips">${premiumButtons}</div></td>
+        <td><strong>${rewardLabel}</strong><div class="chips">${rewardButtons}</div></td>
       </tr>`;
     })
     .join("\n");
@@ -133,7 +150,7 @@ export default async (req: Request): Promise<Response> => {
     submissions.length === 0
       ? `<div class="empty">Noch keine Empfehlungen eingegangen.</div>`
       : `<table>
-        <thead><tr><th>Datum</th><th>Code</th><th>Neuer Kontakt</th><th>Status</th><th>Prämie</th></tr></thead>
+        <thead><tr><th>Datum</th><th>Code</th><th>Neuer Kontakt</th><th>Status</th><th>Prämie</th><th>Prämienwahl</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`
   }

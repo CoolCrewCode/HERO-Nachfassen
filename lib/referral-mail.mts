@@ -17,7 +17,8 @@ export function buildReferralMailBody(customerName: string | null, code: string,
     `vielen Dank, dass Sie sich für ${companyName} entschieden haben.`,
     "",
     `Kennen Sie jemanden, der auch von unserem Service profitieren könnte? Empfehlen Sie uns weiter ` +
-      `und Sie erhalten ${premiumEuro()}€ Prämie für jede erfolgreiche Empfehlung.`,
+      `und Sie erhalten ${premiumEuro()}€ Prämie für jede erfolgreiche Empfehlung – Sie entscheiden ` +
+      `dann, ob als Auszahlung oder als Rabatt auf Ihre nächste Wartung.`,
     "",
     `Ihr persönlicher Empfehlungscode: ${code}`,
     "",
