@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-// Signierte Freigabe-Links, damit im "Ja/Nein"-Klick keine echte Authentifizierung
-// nötig ist, die Links aber trotzdem nicht erratbar/fälschbar sind.
+// Signierte Freigabe-/Aktions-Links, damit im Klick keine echte Authentifizierung nötig ist,
+// die Links aber trotzdem nicht erratbar/fälschbar sind.
 
 export type ApprovalAction = "send" | "skip";
 
@@ -13,12 +13,32 @@ function getSecret(): string {
   return secret;
 }
 
-function payloadFor(matchId: string, offerNr: string, action: ApprovalAction): string {
-  return `${matchId}:${offerNr}:${action}`;
-}
-
 function sign(payload: string): string {
   return createHmac("sha256", getSecret()).update(payload).digest("hex");
+}
+
+function safeCompare(expectedHex: string, actualHex: string): boolean {
+  const a = Buffer.from(expectedHex, "hex");
+  const b = Buffer.from(actualHex, "hex");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+export function getBaseUrl(): string {
+  // URL wird von Netlify automatisch als Env-Var bereitgestellt (primäre Site-URL).
+  const url = process.env.URL || process.env.SITE_URL;
+  if (!url) {
+    throw new Error("Konnte die Site-URL nicht ermitteln (URL/SITE_URL Env-Var fehlt).");
+  }
+  return url.replace(/\/$/, "");
+}
+
+// ---------------------------------------------------------------------------
+// Angebots-Nachfassen (Ja/Nein pro Angebot + Übersichtsseite)
+// ---------------------------------------------------------------------------
+
+function payloadFor(matchId: string, offerNr: string, action: ApprovalAction): string {
+  return `${matchId}:${offerNr}:${action}`;
 }
 
 export function verifySignature(
@@ -27,20 +47,7 @@ export function verifySignature(
   action: ApprovalAction,
   signature: string
 ): boolean {
-  const expected = sign(payloadFor(matchId, offerNr, action));
-  const a = Buffer.from(expected, "hex");
-  const b = Buffer.from(signature, "hex");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
-function getBaseUrl(): string {
-  // URL wird von Netlify automatisch als Env-Var bereitgestellt (primäre Site-URL).
-  const url = process.env.URL || process.env.SITE_URL;
-  if (!url) {
-    throw new Error("Konnte die Site-URL nicht ermitteln (URL/SITE_URL Env-Var fehlt).");
-  }
-  return url.replace(/\/$/, "");
+  return safeCompare(sign(payloadFor(matchId, offerNr, action)), signature);
 }
 
 export function buildApprovalLink(matchId: string, offerNr: string, action: ApprovalAction): string {
@@ -58,9 +65,39 @@ export function buildDashboardLink(): string {
 }
 
 export function verifyDashboardKey(key: string): boolean {
-  const expected = sign(DASHBOARD_PAYLOAD);
-  const a = Buffer.from(expected, "hex");
-  const b = Buffer.from(key, "hex");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  return safeCompare(sign(DASHBOARD_PAYLOAD), key);
+}
+
+// ---------------------------------------------------------------------------
+// Empfehlungsprogramm (Übersichtsseite + Status-Änderungen)
+// ---------------------------------------------------------------------------
+
+const REFERRAL_DASHBOARD_PAYLOAD = "referral-dashboard";
+
+export function buildReferralDashboardLink(): string {
+  const params = new URLSearchParams({ key: sign(REFERRAL_DASHBOARD_PAYLOAD) });
+  return `${getBaseUrl()}/.netlify/functions/hero-referral-dashboard?${params.toString()}`;
+}
+
+export function verifyReferralDashboardKey(key: string): boolean {
+  return safeCompare(sign(REFERRAL_DASHBOARD_PAYLOAD), key);
+}
+
+function referralActionPayload(id: string, field: string, value: string): string {
+  return `referral:${id}:${field}:${value}`;
+}
+
+/** Link, der auf der Übersichtsseite direkt den Status/Prämienstatus einer Empfehlung ändert. */
+export function buildReferralActionLink(id: string, field: "status" | "premiumStatus", value: string): string {
+  const params = new URLSearchParams({
+    id,
+    field,
+    value,
+    sig: sign(referralActionPayload(id, field, value)),
+  });
+  return `${getBaseUrl()}/.netlify/functions/hero-referral-dashboard?${params.toString()}`;
+}
+
+export function verifyReferralActionSignature(id: string, field: string, value: string, signature: string): boolean {
+  return safeCompare(sign(referralActionPayload(id, field, value)), signature);
 }

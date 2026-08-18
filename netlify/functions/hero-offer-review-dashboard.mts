@@ -1,4 +1,4 @@
-import { fetchDueCandidates, FOLLOWUP_AFTER_DAYS } from "../../lib/candidates.mts";
+import { fetchDueCandidates, FOLLOWUP_AFTER_DAYS, FOLLOWUP_MAX_DAYS } from "../../lib/candidates.mts";
 import { buildApprovalLink, verifyDashboardKey } from "../../lib/approval.mts";
 
 function escapeHtml(text: string): string {
@@ -181,7 +181,8 @@ export default async (req: Request): Promise<Response> => {
 </style>
 </head><body>
   <h1>Offene Angebote – Nachfassen</h1>
-  <p class="sub">${result.due.length} Angebot(e) seit mindestens ${FOLLOWUP_AFTER_DAYS} Tagen ohne Rückmeldung.
+  <p class="sub">${result.due.length} Angebot(e) seit ${FOLLOWUP_AFTER_DAYS}–${FOLLOWUP_MAX_DAYS} Tagen ohne
+    Rückmeldung (älter als ${FOLLOWUP_MAX_DAYS} Tage werden nicht mehr angezeigt).
     Ja/Nein wirkt sofort in dieser Zeile, ohne die Seite neu zu laden.</p>
   ${
     result.due.length === 0

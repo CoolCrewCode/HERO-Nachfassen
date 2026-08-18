@@ -5,3 +5,8 @@
 # Cron läuft immer in UTC – bei Bedarf anpassen: https://docs.netlify.com/build/functions/scheduled-functions/
 [functions."hero-offer-followup"]
   schedule = "0 7 * * *"
+
+# Empfehlungsprogramm: täglich um 08:00 UTC (zeitversetzt zum Nachfass-Job, damit nicht alles
+# gleichzeitig auf HERO zugreift).
+[functions."hero-referral-code-mailer"]
+  schedule = "0 8 * * *"

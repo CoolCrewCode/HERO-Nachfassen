@@ -19,6 +19,7 @@ export interface HeroHistoryEntry {
 
 export interface HeroPerson {
   id: string;
+  nr: string | null;
   first_name: string | null;
   last_name: string | null;
   email: string | null;
@@ -108,12 +109,14 @@ const PROJECT_MATCHES_QUERY = /* GraphQL */ `
       }
       customer {
         id
+        nr
         first_name
         last_name
         email
       }
       contact {
         id
+        nr
         first_name
         last_name
         email

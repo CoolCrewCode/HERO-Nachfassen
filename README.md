@@ -82,3 +82,47 @@ Stand, auch älterer, bereits gemeldeter Angebote.
   entspricht dem mit Robert abgestimmten Entwurf (freundlich, unaufdringlich, klarer
   Call-to-Action).
 - Zeitplan ändern: Cron-Ausdruck in `netlify.toml` anpassen (läuft in UTC).
+
+---
+
+# Empfehlungsprogramm (Kunden-werben-Kunden)
+
+Läuft täglich (Standard: 08:00 UTC), findet Kunden mit neuer Rechnung
+(`HERO_INVOICED_STATUS_CODES`) und verschickt ihnen einmalig ihren persönlichen
+Empfehlungscode (`KK-<HERO-Kundennummer>`) samt Link zur Empfehlungs-Landingpage und Hinweis
+auf die Prämie (`REFERRAL_PREMIUM_EUR`, Standard 50€).
+
+**Ablauf:**
+
+1. [netlify/functions/hero-referral-code-mailer.mts](netlify/functions/hero-referral-code-mailer.mts)
+   verschickt den Code nach Rechnung (einmal pro Kunde, Tracking über Netlify Blobs, nicht
+   über HERO-Notizen).
+2. Der geworbene Neukunde landet über den Link auf
+   [netlify/functions/hero-referral-landing.mts](netlify/functions/hero-referral-landing.mts)
+   (öffentliches Formular, Code ist schon vorausgefüllt) und trägt seine Kontaktdaten ein.
+3. Die Einreichung wird in Netlify Blobs gespeichert, `MAIL_REVIEW_TO` bekommt sofort eine
+   Benachrichtigung mit allen Angaben.
+4. **Wichtig — bewusste Einschränkung für den Start:** Der Lead wird **nicht automatisch**
+   in HERO angelegt (die dafür nötige HERO-Mutation ist ungeprüft, das wollten wir nicht
+   blind gegen echte Kundendaten testen). Robert legt den Lead wie gewohnt selbst in HERO an,
+   nachdem er die Benachrichtigungs-Mail bekommen hat.
+5. Auf der Übersichtsseite
+   [netlify/functions/hero-referral-dashboard.mts](netlify/functions/hero-referral-dashboard.mts)
+   (Link ebenfalls in der Benachrichtigungs-Mail) sieht Robert alle Empfehlungen und setzt
+   den Status (Lead angelegt/Auftrag/abgelehnt) sowie den Prämienstatus (offen/fällig/
+   ausgezahlt) per Klick — das automatische tägliche Abgleichen "wurde aus dem Lead ein
+   Auftrag?" ist bewusst noch nicht gebaut (hängt vom offenen Punkt 4 ab) und wird aktuell
+   manuell gepflegt.
+
+**Setup zusätzlich zum oben genannten:**
+
+- `HERO_INVOICED_STATUS_CODES`, `REFERRAL_PREMIUM_EUR`, `REFERRAL_DRY_RUN` in `.env`/Netlify
+  setzen (siehe `.env.example`).
+- Nutzt dieselben `MS_*`/`MAIL_FROM`/`MAIL_REVIEW_TO`/`APPROVAL_SECRET`-Variablen wie das
+  Nachfass-System.
+- **Ungeprüfte Annahme:** `customer`/`contact` werden jetzt zusätzlich mit dem Feld `nr`
+  abgefragt (die eigentliche Kundennummer, nicht die interne GraphQL-ID) — das ist beim
+  ersten Testlauf zu bestätigen; falls die Query mit einem Feldfehler abbricht, muss der
+  Feldname in [lib/hero-client.mts](lib/hero-client.mts) angepasst werden.
+- Testlauf: `REFERRAL_DRY_RUN=true` setzen, `hero-referral-code-mailer` manuell auslösen,
+  Log prüfen (`checked`/`sent`/...), dann auf `false` zurücksetzen.

@@ -1,9 +1,12 @@
 {
-  "name": "hero-offer-followup",
+  "name": "hero-automatisierung",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Netlify Scheduled Function: automatisches Nachfassen offener HERO-Angebote nach X Tagen, Versand über Microsoft Graph",
+  "description": "Netlify Functions: HERO-Angebots-Nachfassen und Empfehlungsprogramm für Küpper Kälte- und Klimatechnik",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  },
   "devDependencies": {
     "@netlify/functions": "^2.8.2",
     "typescript": "^5.6.3"

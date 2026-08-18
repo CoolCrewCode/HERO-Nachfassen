@@ -8,6 +8,13 @@ import { alreadySent, alreadySkipped } from "./mail-template.mts";
 
 export const FOLLOWUP_AFTER_DAYS = Number(process.env.HERO_FOLLOWUP_DAYS ?? 7);
 
+// Angebote, die älter sind, werden gar nicht mehr berücksichtigt (weder Übersicht noch neue
+// Benachrichtigung). Entscheidung von Robert: alter Bestand vor dem Live-Start wird nicht mehr
+// nachbearbeitet (u.a. weil ältere Angebote teils schon abgesagt/archiviert sind, das aber in
+// HERO nicht sauber von "noch offen" zu unterscheiden war) – ab Live-Start soll nichts mehr
+// liegen bleiben, daher reicht ein fixes Zeitfenster.
+export const FOLLOWUP_MAX_DAYS = Number(process.env.HERO_FOLLOWUP_MAX_DAYS ?? 70);
+
 const OPEN_STATUS_CODES = (process.env.HERO_OPEN_STATUS_CODES ?? "")
   .split(",")
   .map((s) => s.trim())
@@ -58,6 +65,7 @@ export interface FindDueResult {
   skippedNotOpenStatus: number;
   skippedNoOfferDoc: number;
   skippedTooRecent: number;
+  skippedTooOld: number;
   skippedAlreadySent: number;
   skippedNoEmail: number;
 }
@@ -79,6 +87,7 @@ export async function fetchDueCandidates(debug = false): Promise<FindDueResult> 
     skippedNotOpenStatus: 0,
     skippedNoOfferDoc: 0,
     skippedTooRecent: 0,
+    skippedTooOld: 0,
     skippedAlreadySent: 0,
     skippedNoEmail: 0,
   };
@@ -107,8 +116,15 @@ export async function fetchDueCandidates(debug = false): Promise<FindDueResult> 
       continue;
     }
 
-    if (daysSince(offer.created) < FOLLOWUP_AFTER_DAYS) {
+    const ageInDays = daysSince(offer.created);
+
+    if (ageInDays < FOLLOWUP_AFTER_DAYS) {
       result.skippedTooRecent++;
+      continue;
+    }
+
+    if (ageInDays > FOLLOWUP_MAX_DAYS) {
+      result.skippedTooOld++;
       continue;
     }
 
@@ -127,7 +143,7 @@ export async function fetchDueCandidates(debug = false): Promise<FindDueResult> 
       match,
       offer,
       recipient,
-      daysOld: daysSince(offer.created),
+      daysOld: ageInDays,
       wasSkippedBefore: alreadySkipped(match),
     });
   }

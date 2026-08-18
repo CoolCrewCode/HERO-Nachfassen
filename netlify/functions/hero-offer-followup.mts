@@ -170,6 +170,7 @@ export default async (): Promise<Response> => {
     skippedNotOpenStatus: result.skippedNotOpenStatus,
     skippedNoOfferDoc: result.skippedNoOfferDoc,
     skippedTooRecent: result.skippedTooRecent,
+    skippedTooOld: result.skippedTooOld,
     skippedAlreadySent: result.skippedAlreadySent,
     skippedNoEmail: result.skippedNoEmail,
     dryRun: DRY_RUN,
