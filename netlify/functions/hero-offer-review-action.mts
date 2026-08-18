@@ -18,11 +18,26 @@ function escapeHtml(text: string): string {
     .replaceAll('"', "&quot;");
 }
 
+type ActionResult =
+  | { status: "invalid_link"; message: string }
+  | { status: "not_found"; message: string }
+  | { status: "already_sent"; message: string }
+  | { status: "already_skipped"; message: string }
+  | { status: "skipped"; message: string }
+  | { status: "no_contact"; message: string }
+  | {
+      status: "preview";
+      subject: string;
+      body: string;
+      recipientName: string;
+      recipientEmail: string;
+      isReversal: boolean;
+      confirmUrl: string;
+    }
+  | { status: "sent"; message: string }
+  | { status: "error"; message: string };
+
 function htmlPage(title: string, bodyHtml: string): Response {
-  // Rückweg zur Übersichtsseite auf jeder Seite, damit man nach einer Aktion nicht manuell
-  // zur alten Mail zurück und die Übersicht selbst neu laden muss – ein Klick reicht, und die
-  // Übersichtsseite wird bei jedem Aufruf frisch aus HERO neu geladen (zeigt also sofort den
-  // aktuellen Stand, inklusive der gerade getroffenen Entscheidung).
   let backLink = "";
   try {
     backLink = `<p><a href="${buildDashboardLink()}">← Zurück zur Übersicht</a></p>`;
@@ -46,6 +61,54 @@ function htmlPage(title: string, bodyHtml: string): Response {
   return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+function jsonResponse(result: ActionResult): Response {
+  return new Response(JSON.stringify(result), { headers: { "content-type": "application/json" } });
+}
+
+// Bildet ein ActionResult auf eine vollständige HTML-Seite ab (für Klicks direkt aus der E-Mail,
+// ohne JavaScript – die Übersichtsseite nutzt stattdessen jsonResponse und aktualisiert sich selbst).
+function resultToHtmlPage(result: ActionResult): Response {
+  switch (result.status) {
+    case "invalid_link":
+    case "not_found":
+    case "already_sent":
+    case "already_skipped":
+    case "skipped":
+    case "no_contact":
+    case "sent":
+    case "error": {
+      const titles: Record<string, string> = {
+        invalid_link: "Ungültiger Link",
+        not_found: "Nicht gefunden",
+        already_sent: "Bereits erledigt",
+        already_skipped: "Bereits übersprungen",
+        skipped: "Übersprungen",
+        no_contact: "Kein Kontakt gefunden",
+        sent: "Mail verschickt",
+        error: "Fehler",
+      };
+      return htmlPage(titles[result.status], `<p>${escapeHtml(result.message)}</p>`);
+    }
+    case "preview": {
+      const reversalNote = result.isReversal
+        ? `<p>ℹ️ Du hattest dieses Angebot zuvor übersprungen — mit "Ja" wird das jetzt rückgängig gemacht.</p>`
+        : "";
+      return htmlPage(
+        "Vorschau – noch nicht verschickt",
+        reversalNote +
+          `<p>Diese Mail würde an <strong>${escapeHtml(result.recipientName)}</strong> ` +
+          `(${escapeHtml(result.recipientEmail)}) verschickt werden:</p>` +
+          `<div class="preview"><dl>` +
+          `<dt>Betreff</dt><dd>${escapeHtml(result.subject)}</dd>` +
+          `<dt>Text</dt><dd>${escapeHtml(result.body).replaceAll("\n", "<br>")}</dd>` +
+          `</dl></div>` +
+          `<p><a class="btn" href="${result.confirmUrl}">✅ Ja, jetzt wirklich senden</a></p>` +
+          `<p>Wenn du hier nichts klickst, passiert nichts — der Kunde bekommt keine Mail.</p>`
+      );
+    }
+  }
+}
+
 function findRecipient(match: HeroProjectMatch): { email: string; name: string | null } | null {
   const person = match.contact ?? match.customer;
   if (!person?.email) return null;
@@ -53,7 +116,7 @@ function findRecipient(match: HeroProjectMatch): { email: string; name: string |
   return { email: person.email, name };
 }
 
-export default async (req: Request): Promise<Response> => {
+async function handle(req: Request): Promise<ActionResult> {
   const url = new URL(req.url);
   const action = url.searchParams.get("action") as ApprovalAction | null;
   const matchId = url.searchParams.get("matchId");
@@ -62,59 +125,58 @@ export default async (req: Request): Promise<Response> => {
   const confirmed = url.searchParams.get("confirm") === "1";
 
   if (!action || !matchId || !offerNr || !signature || (action !== "send" && action !== "skip")) {
-    return htmlPage("Ungültiger Link", "<p>Dieser Link ist unvollständig oder fehlerhaft.</p>");
+    return { status: "invalid_link", message: "Dieser Link ist unvollständig oder fehlerhaft." };
   }
 
   if (!verifySignature(matchId, offerNr, action, signature)) {
-    return htmlPage("Ungültiger Link", "<p>Dieser Link ist nicht gültig (falsche oder abgelaufene Signatur).</p>");
+    return { status: "invalid_link", message: "Dieser Link ist nicht gültig (falsche oder abgelaufene Signatur)." };
   }
 
   const matchIdNum = Number(matchId);
   if (!Number.isFinite(matchIdNum)) {
-    return htmlPage("Ungültiger Link", "<p>Die Projekt-ID in diesem Link ist ungültig.</p>");
+    return { status: "invalid_link", message: "Die Projekt-ID in diesem Link ist ungültig." };
   }
 
   let matches: HeroProjectMatch[];
   try {
     matches = await fetchProjectMatches({ ids: [matchIdNum] });
   } catch (err) {
-    return htmlPage("Fehler", `<p>Die HERO-Daten konnten nicht geladen werden: ${escapeHtml(String(err))}</p>`);
+    return { status: "error", message: `Die HERO-Daten konnten nicht geladen werden: ${String(err)}` };
   }
 
   // HERO liefert die id als Zahl zurück, matchId aus der URL ist ein String – deshalb hier
   // beide als String vergleichen (sonst schlägt der Vergleich immer fehl, siehe status_code-Bug).
   const match = matches.find((m) => String(m.id) === matchId);
   if (!match) {
-    return htmlPage(
-      "Nicht gefunden",
-      "<p>Dieses Projekt wurde in HERO nicht gefunden. Das passiert meist, wenn es zwischenzeitlich bereits " +
-        "geschlossen/archiviert wurde — dann ist ohnehin keine Nachfass-Mail mehr nötig, es ist also alles in Ordnung.</p>"
-    );
+    return {
+      status: "not_found",
+      message:
+        "Dieses Projekt wurde in HERO nicht gefunden. Das passiert meist, wenn es zwischenzeitlich bereits " +
+        "geschlossen/archiviert wurde — dann ist ohnehin keine Nachfass-Mail mehr nötig, es ist also alles in Ordnung.",
+    };
   }
 
   // Verschickt ist endgültig (die Mail ist raus, das lässt sich nicht zurückholen).
   if (alreadySent(match)) {
-    return htmlPage(
-      "Bereits erledigt",
-      `<p>Für Angebot ${escapeHtml(offerNr)} (Projekt ${escapeHtml(match.project_nr)}) wurde die Nachfass-Mail ` +
-        "bereits verschickt — es passiert nichts Weiteres.</p>"
-    );
+    return {
+      status: "already_sent",
+      message: `Für Angebot ${offerNr} (Projekt ${match.project_nr}) wurde die Nachfass-Mail bereits verschickt — es passiert nichts Weiteres.`,
+    };
   }
 
   // "Übersprungen" ist dagegen eine Zwischenentscheidung: Ein erneuter Klick auf "Nein" ist einfach
   // idempotent, aber ein Klick auf "Ja" nach vorherigem "Nein" wird bewusst zugelassen (Umentscheiden
   // soll möglich sein, z.B. wenn sich die Lage beim Kunden doch wieder geändert hat).
   if (action === "skip" && alreadySkipped(match)) {
-    return htmlPage(
-      "Bereits übersprungen",
-      `<p>Für Angebot ${escapeHtml(offerNr)} (Projekt ${escapeHtml(match.project_nr)}) hattest du schon ` +
-        "entschieden, nicht nachzufassen — es passiert nichts Weiteres.</p>"
-    );
+    return {
+      status: "already_skipped",
+      message: `Für Angebot ${offerNr} (Projekt ${match.project_nr}) hattest du schon entschieden, nicht nachzufassen — es passiert nichts Weiteres.`,
+    };
   }
 
   const offer = match.customer_documents.find((d) => d.nr === offerNr);
   if (!offer) {
-    return htmlPage("Nicht gefunden", "<p>Dieses Angebot wurde in HERO nicht gefunden.</p>");
+    return { status: "not_found", message: "Dieses Angebot wurde in HERO nicht gefunden." };
   }
 
   const now = new Date().toISOString();
@@ -124,68 +186,54 @@ export default async (req: Request): Promise<Response> => {
     try {
       await addLogbookEntry(match.id, buildSkipMarker(now));
     } catch (err) {
-      return htmlPage(
-        "Fehler",
-        `<p>Der Vermerk "übersprungen" konnte nicht in HERO gespeichert werden: ${escapeHtml(String(err))}</p>`
-      );
+      return { status: "error", message: `Der Vermerk "übersprungen" konnte nicht in HERO gespeichert werden: ${String(err)}` };
     }
-    return htmlPage(
-      "Übersprungen",
-      `<p>Für Angebot ${escapeHtml(offer.nr)} (Projekt ${escapeHtml(match.project_nr)}) wird nicht nachgefasst. ` +
-        "Das ist in HERO vermerkt. Falls sich das noch ändert, kannst du jederzeit auf denselben \"Ja\"-Link " +
-        "aus der E-Mail klicken, um das rückgängig zu machen.</p>"
-    );
+    return {
+      status: "skipped",
+      message: `Für Angebot ${offer.nr} (Projekt ${match.project_nr}) wird nicht nachgefasst. Das ist in HERO vermerkt. Du kannst das jederzeit rückgängig machen.`,
+    };
   }
 
   const recipient = findRecipient(match);
   if (!recipient) {
-    return htmlPage(
-      "Kein Kontakt gefunden",
-      `<p>Für Projekt ${escapeHtml(match.project_nr)} ist keine E-Mail-Adresse hinterlegt, es konnte keine ` +
-        "Mail verschickt werden.</p>"
-    );
+    return {
+      status: "no_contact",
+      message: `Für Projekt ${match.project_nr} ist keine E-Mail-Adresse hinterlegt, es konnte keine Mail verschickt werden.`,
+    };
   }
 
   const subject = buildSubject({ toName: recipient.name, projectNr: match.project_nr, offer });
   const body = buildBody({ toName: recipient.name, projectNr: match.project_nr, offer });
 
-  // Erst Vorschau zeigen. Erst der zweite Klick (mit confirm=1) verschickt tatsächlich.
   if (!confirmed) {
     const confirmUrl = new URL(req.url);
     confirmUrl.searchParams.set("confirm", "1");
-
-    const reversalNote = isReversal
-      ? `<p>ℹ️ Du hattest dieses Angebot zuvor übersprungen — mit "Ja" wird das jetzt rückgängig gemacht.</p>`
-      : "";
-
-    return htmlPage(
-      "Vorschau – noch nicht verschickt",
-      reversalNote +
-        `<p>Diese Mail würde an <strong>${escapeHtml(recipient.name ?? recipient.email)}</strong> ` +
-        `(${escapeHtml(recipient.email)}) verschickt werden:</p>` +
-        `<div class="preview"><dl>` +
-        `<dt>Betreff</dt><dd>${escapeHtml(subject)}</dd>` +
-        `<dt>Text</dt><dd>${escapeHtml(body).replaceAll("\n", "<br>")}</dd>` +
-        `</dl></div>` +
-        `<p><a class="btn" href="${confirmUrl.toString()}">✅ Ja, jetzt wirklich senden</a></p>` +
-        `<p>Wenn du hier nichts klickst, passiert nichts — der Kunde bekommt keine Mail.</p>`
-    );
+    return {
+      status: "preview",
+      subject,
+      body,
+      recipientName: recipient.name ?? recipient.email,
+      recipientEmail: recipient.email,
+      isReversal,
+      confirmUrl: confirmUrl.toString(),
+    };
   }
 
   try {
-    await sendGraphMail({
-      toEmail: recipient.email,
-      toName: recipient.name,
-      subject,
-      body,
-    });
+    await sendGraphMail({ toEmail: recipient.email, toName: recipient.name, subject, body });
     await addLogbookEntry(match.id, buildSentMarker(now));
   } catch (err) {
-    return htmlPage("Fehler beim Versand", `<p>Die Mail konnte nicht verschickt werden: ${escapeHtml(String(err))}</p>`);
+    return { status: "error", message: `Die Mail konnte nicht verschickt werden: ${String(err)}` };
   }
 
-  return htmlPage(
-    "Mail verschickt",
-    `<p>Die Nachfass-Mail für Angebot ${escapeHtml(offer.nr)} wurde an ${escapeHtml(recipient.email)} verschickt.</p>`
-  );
+  return {
+    status: "sent",
+    message: `Die Nachfass-Mail für Angebot ${offer.nr} wurde an ${recipient.email} verschickt.`,
+  };
+}
+
+export default async (req: Request): Promise<Response> => {
+  const wantsJson = new URL(req.url).searchParams.get("format") === "json";
+  const result = await handle(req);
+  return wantsJson ? jsonResponse(result) : resultToHtmlPage(result);
 };

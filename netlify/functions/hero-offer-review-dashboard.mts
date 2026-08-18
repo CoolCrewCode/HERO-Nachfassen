@@ -17,6 +17,88 @@ function formatDate(iso: string): string {
   }
 }
 
+// Läuft im Browser der Übersichtsseite (nicht in der Netlify Function). Ruft dieselbe
+// hero-offer-review-action-Funktion per fetch() mit format=json auf, statt dorthin zu
+// navigieren, und aktualisiert nur die betroffene Tabellenzeile.
+const CLIENT_SCRIPT = `
+function setRowBusy(row, busy) {
+  row.querySelectorAll("button").forEach(function (b) { b.disabled = busy; });
+}
+
+function showResultInRow(row, html) {
+  var cell = row.querySelector(".actions");
+  cell.innerHTML = html;
+}
+
+async function callAction(url) {
+  var sep = url.indexOf("?") === -1 ? "?" : "&";
+  var res = await fetch(url + sep + "format=json");
+  return res.json();
+}
+
+function renderStatus(result) {
+  if (result.status === "skipped" || result.status === "already_skipped") {
+    return '<span class="tag tag-no">🚫 Übersprungen</span> <button type="button" class="linklike js-undo">rückgängig?</button>';
+  }
+  if (result.status === "sent" || result.status === "already_sent") {
+    return '<span class="tag tag-yes">✅ Verschickt</span>';
+  }
+  if (result.status === "not_found") {
+    return '<span class="tag tag-warn">⚠️ Nicht mehr in HERO gefunden (evtl. schon archiviert)</span>';
+  }
+  return '<span class="tag tag-warn">⚠️ ' + result.message + '</span>';
+}
+
+document.addEventListener("click", async function (ev) {
+  var el = ev.target.closest("[data-skip-url], [data-send-url], .js-undo, .js-confirm-send");
+  if (!el) return;
+  ev.preventDefault();
+  var row = el.closest("tr");
+
+  if (el.hasAttribute("data-skip-url")) {
+    setRowBusy(row, true);
+    var result = await callAction(el.getAttribute("data-skip-url"));
+    showResultInRow(row, renderStatus(result));
+    return;
+  }
+
+  if (el.hasAttribute("data-send-url")) {
+    setRowBusy(row, true);
+    var result = await callAction(el.getAttribute("data-send-url"));
+    if (result.status !== "preview") {
+      showResultInRow(row, renderStatus(result));
+      return;
+    }
+    var html =
+      '<div class="inline-preview">' +
+      (result.isReversal ? '<p class="note">ℹ️ War übersprungen — wird jetzt rückgängig gemacht.</p>' : "") +
+      '<dl><dt>Betreff</dt><dd>' + result.subject.replace(/&/g,"&amp;").replace(/</g,"&lt;") + '</dd>' +
+      '<dt>Text</dt><dd>' + result.body.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/\\n/g,"<br>") + '</dd></dl>' +
+      '<button type="button" class="btn btn-yes js-confirm-send" data-confirm-url="' + result.confirmUrl + '">✅ Jetzt wirklich senden</button> ' +
+      '<button type="button" class="linklike js-cancel-send">Abbrechen</button>' +
+      '</div>';
+    showResultInRow(row, html);
+    row.querySelector(".js-cancel-send").addEventListener("click", function () {
+      showResultInRow(row, row.getAttribute("data-original-actions"));
+    });
+    setRowBusy(row, false);
+    return;
+  }
+
+  if (el.classList.contains("js-confirm-send")) {
+    setRowBusy(row, true);
+    var result = await callAction(el.getAttribute("data-confirm-url"));
+    showResultInRow(row, renderStatus(result));
+    return;
+  }
+
+  if (el.classList.contains("js-undo")) {
+    var original = row.getAttribute("data-original-actions");
+    showResultInRow(row, original);
+  }
+});
+`;
+
 export default async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const key = url.searchParams.get("key");
@@ -42,7 +124,7 @@ export default async (req: Request): Promise<Response> => {
     );
   }
 
-  // Neueste zuerst? Nein – älteste (am längsten überfällige) zuerst, die sind am dringendsten.
+  // Älteste (am längsten überfällige) zuerst, die sind am dringendsten.
   const sorted = [...result.due].sort((a, b) => b.daysOld - a.daysOld);
 
   const rows = sorted
@@ -51,19 +133,19 @@ export default async (req: Request): Promise<Response> => {
       const sendLink = buildApprovalLink(c.match.id, c.offer.nr, "send");
       const skipLink = buildApprovalLink(c.match.id, c.offer.nr, "skip");
       const skippedNote = c.wasSkippedBefore
-        ? `<div class="note">🚫 zuvor übersprungen — "Ja" klicken macht das rückgängig</div>`
+        ? `<div class="note">🚫 zuvor übersprungen — "Ja" macht das rückgängig</div>`
         : "";
-      return `<tr>
+      const actionsHtml =
+        `<a class="btn btn-yes" href="${sendLink}" data-send-url="${sendLink}">✅ Ja</a> ` +
+        `<a class="btn btn-no" href="${skipLink}" data-skip-url="${skipLink}">🚫 Nein</a>` +
+        skippedNote;
+      return `<tr data-original-actions="${escapeHtml(actionsHtml)}">
         <td>${escapeHtml(c.match.project_nr)}</td>
         <td>${escapeHtml(name)}<div class="muted">${escapeHtml(c.recipient.email)}</div></td>
         <td>${escapeHtml(c.offer.nr)}</td>
         <td>${escapeHtml(formatDate(c.offer.created))}</td>
         <td class="num">${Math.floor(c.daysOld)}</td>
-        <td class="actions">
-          <a class="btn btn-yes" href="${sendLink}">✅ Ja</a>
-          <a class="btn btn-no" href="${skipLink}">🚫 Nein</a>
-          ${skippedNote}
-        </td>
+        <td class="actions">${actionsHtml}</td>
       </tr>`;
     })
     .join("\n");
@@ -79,18 +161,28 @@ export default async (req: Request): Promise<Response> => {
   td{border-bottom:1px solid #eee;padding:0.6rem 0.5rem;vertical-align:top}
   .muted{color:#777;font-size:0.85rem}
   .num{text-align:right;font-variant-numeric:tabular-nums}
-  .actions{white-space:nowrap}
+  .actions{white-space:normal;min-width:12rem}
   .btn{display:inline-block;padding:0.35rem 0.7rem;border-radius:5px;text-decoration:none;font-weight:bold;
-       font-size:0.9rem;margin-right:0.3rem}
+       font-size:0.9rem;margin-right:0.3rem;border:none;cursor:pointer;font-family:inherit}
   .btn-yes{background:#1a7f37;color:#fff}
   .btn-no{background:#b42318;color:#fff}
+  .btn:disabled{opacity:0.5;cursor:default}
+  .linklike{background:none;border:none;color:#0969da;text-decoration:underline;cursor:pointer;font-size:0.85rem;
+            padding:0;font-family:inherit}
   .note{font-size:0.8rem;color:#b45309;margin-top:0.3rem}
+  .tag{font-weight:bold;font-size:0.9rem}
+  .tag-no{color:#b42318}
+  .tag-yes{color:#1a7f37}
+  .tag-warn{color:#b45309}
+  .inline-preview{background:#f9f9f9;border:1px solid #ccc;border-radius:8px;padding:0.75rem;max-width:28rem}
+  .inline-preview dt{font-weight:bold;margin-top:0.4rem;font-size:0.85rem}
+  .inline-preview dd{margin:0.15rem 0 0;font-size:0.9rem}
   .empty{margin-top:2rem;padding:1.5rem;background:#f0fdf4;border-radius:8px;color:#166534}
 </style>
 </head><body>
   <h1>Offene Angebote – Nachfassen</h1>
   <p class="sub">${result.due.length} Angebot(e) seit mindestens ${FOLLOWUP_AFTER_DAYS} Tagen ohne Rückmeldung.
-    Diese Seite zeigt immer den aktuellen Stand — bereits verschickte verschwinden automatisch.</p>
+    Ja/Nein wirkt sofort in dieser Zeile, ohne die Seite neu zu laden.</p>
   ${
     result.due.length === 0
       ? `<div class="empty">🎉 Aktuell nichts offen. Alles erledigt oder noch nicht fällig.</div>`
@@ -99,6 +191,7 @@ export default async (req: Request): Promise<Response> => {
         <tbody>${rows}</tbody>
       </table>`
   }
+  <script>${CLIENT_SCRIPT}</script>
 </body></html>`;
 
   return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
