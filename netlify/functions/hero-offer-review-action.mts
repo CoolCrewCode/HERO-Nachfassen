@@ -109,7 +109,14 @@ export default async (req: Request): Promise<Response> => {
   const isReversal = action === "send" && alreadySkipped(match);
 
   if (action === "skip") {
-    await addLogbookEntry(match.id, buildSkipMarker(now));
+    try {
+      await addLogbookEntry(match.id, buildSkipMarker(now));
+    } catch (err) {
+      return htmlPage(
+        "Fehler",
+        `<p>Der Vermerk "übersprungen" konnte nicht in HERO gespeichert werden: ${escapeHtml(String(err))}</p>`
+      );
+    }
     return htmlPage(
       "Übersprungen",
       `<p>Für Angebot ${escapeHtml(offer.nr)} (Projekt ${escapeHtml(match.project_nr)}) wird nicht nachgefasst. ` +
