@@ -1,4 +1,4 @@
-import { fetchProjectMatches, type HeroPerson, type HeroProjectMatch } from "../../lib/hero-client.mts";
+import { fetchProjectMatches, type HeroDocument, type HeroPerson, type HeroProjectMatch } from "../../lib/hero-client.mts";
 import { sendGraphMail } from "../../lib/graph-mailer.mts";
 import { getBaseUrl } from "../../lib/approval.mts";
 import { buildReferralCode } from "../../lib/referral.mts";
@@ -17,14 +17,36 @@ const INVOICED_STATUS_CODES = (process.env.HERO_INVOICED_STATUS_CODES ?? "")
   .filter(Boolean)
   .map(Number);
 
+// Rechnungen, die älter sind, werden nicht mehr berücksichtigt – sonst bekäme beim ersten Lauf
+// der komplette Bestand (auch Jahre alte Rechnungen) rückwirkend eine Werbe-Mail. Entscheidung
+// von Robert: 90 Tage.
+const MAX_INVOICE_AGE_DAYS = Number(process.env.REFERRAL_MAX_INVOICE_AGE_DAYS ?? 90);
+
 const DRY_RUN = process.env.REFERRAL_DRY_RUN === "true";
 const DEBUG = process.env.REFERRAL_DEBUG === "true";
+const SEND_CONCURRENCY = 5;
+
+function daysSince(iso: string): number {
+  return (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24);
+}
+
+function latestInvoice(docs: HeroDocument[]): HeroDocument | null {
+  const invoices = docs.filter((d) => d.type === "invoice");
+  if (invoices.length === 0) return null;
+  return invoices.reduce((latest, d) => (new Date(d.created) > new Date(latest.created) ? d : latest));
+}
 
 function recipientOf(match: HeroProjectMatch): { email: string; name: string | null; nr: string | null } | null {
   const person: HeroPerson | null = match.customer ?? match.contact;
   if (!person?.email) return null;
   const name = [person.first_name, person.last_name].filter(Boolean).join(" ") || null;
   return { email: person.email, name, nr: person.nr };
+}
+
+interface Candidate {
+  recipient: { email: string; name: string | null; nr: string };
+  code: string;
+  landingUrl: string;
 }
 
 export default async (): Promise<Response> => {
@@ -42,27 +64,35 @@ export default async (): Promise<Response> => {
   }
 
   let checked = 0;
-  let sent = 0;
   let skippedNoInvoice = 0;
+  let skippedTooOld = 0;
   let skippedAlreadySent = 0;
   let skippedNoEmail = 0;
   let skippedNoCustomerNr = 0;
+  const candidates: Candidate[] = [];
 
   for (const match of matches) {
     checked++;
 
-    const hasInvoice = match.customer_documents.some((d) => d.type === "invoice");
+    const invoice = latestInvoice(match.customer_documents);
 
     if (DEBUG) {
       console.log(
         `DEBUG ${match.project_nr}: measure=${match.measure?.name ?? match.measure?.short} ` +
           `status=${match.current_project_match_status?.status_code} (${match.current_project_match_status?.name}) ` +
-          `dokumente=[${match.customer_documents.map((d) => d.type).join(",")}] hatRechnung=${hasInvoice}`
+          `dokumente=[${match.customer_documents.map((d) => d.type).join(",")}] ` +
+          `rechnungGefunden=${!!invoice} ` +
+          (invoice ? `rechnungDatum=${invoice.created} tageAlt=${daysSince(invoice.created).toFixed(1)}` : "")
       );
     }
 
-    if (!hasInvoice) {
+    if (!invoice) {
       skippedNoInvoice++;
+      continue;
+    }
+
+    if (daysSince(invoice.created) > MAX_INVOICE_AGE_DAYS) {
+      skippedTooOld++;
       continue;
     }
 
@@ -83,30 +113,47 @@ export default async (): Promise<Response> => {
     }
 
     const code = buildReferralCode(recipient.nr);
-    const landingUrl = `${getBaseUrl()}/.netlify/functions/hero-referral-landing?code=${encodeURIComponent(code)}`;
+    candidates.push({
+      recipient: { email: recipient.email, name: recipient.name, nr: recipient.nr },
+      code,
+      landingUrl: `${getBaseUrl()}/.netlify/functions/hero-referral-landing?code=${encodeURIComponent(code)}`,
+    });
+  }
 
-    if (!DRY_RUN) {
-      try {
-        await sendGraphMail({
-          toEmail: recipient.email,
-          toName: recipient.name,
-          subject: buildReferralMailSubject(),
-          body: buildReferralMailBody(recipient.name, code, landingUrl),
-        });
-        await markReferralCodeSent(recipient.nr);
-        sent++;
-      } catch (err) {
-        console.error(`Empfehlungscode-Mail fehlgeschlagen für Kunde ${recipient.nr}:`, err);
-      }
-    } else {
-      sent++;
+  let sent = 0;
+  if (!DRY_RUN) {
+    // Parallel in Batches verschicken, sonst droht bei vielen Kandidaten das 30-Sekunden-
+    // Zeitlimit von Netlify Functions (siehe dieselbe Lösung beim Nachfass-System).
+    for (let i = 0; i < candidates.length; i += SEND_CONCURRENCY) {
+      const batch = candidates.slice(i, i + SEND_CONCURRENCY);
+      const results = await Promise.all(
+        batch.map((c) =>
+          sendGraphMail({
+            toEmail: c.recipient.email,
+            toName: c.recipient.name,
+            subject: buildReferralMailSubject(),
+            body: buildReferralMailBody(c.recipient.name, c.code, c.landingUrl),
+          })
+            .then(() => markReferralCodeSent(c.recipient.nr))
+            .then(() => true)
+            .catch((err) => {
+              console.error(`Empfehlungscode-Mail fehlgeschlagen für Kunde ${c.recipient.nr}:`, err);
+              return false;
+            })
+        )
+      );
+      sent += results.filter(Boolean).length;
     }
+  } else {
+    sent = candidates.length;
   }
 
   const summary = {
     checked,
+    candidates: candidates.length,
     sent,
     skippedNoInvoice,
+    skippedTooOld,
     skippedAlreadySent,
     skippedNoEmail,
     skippedNoCustomerNr,
