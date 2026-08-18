@@ -57,9 +57,14 @@ export default async (req: Request): Promise<Response> => {
     return htmlPage("Ungültiger Link", "<p>Dieser Link ist nicht gültig (falsche oder abgelaufene Signatur).</p>");
   }
 
+  const matchIdNum = Number(matchId);
+  if (!Number.isFinite(matchIdNum)) {
+    return htmlPage("Ungültiger Link", "<p>Die Projekt-ID in diesem Link ist ungültig.</p>");
+  }
+
   let matches: HeroProjectMatch[];
   try {
-    matches = await fetchProjectMatches();
+    matches = await fetchProjectMatches({ ids: [matchIdNum] });
   } catch (err) {
     return htmlPage("Fehler", `<p>Die HERO-Daten konnten nicht geladen werden: ${escapeHtml(String(err))}</p>`);
   }

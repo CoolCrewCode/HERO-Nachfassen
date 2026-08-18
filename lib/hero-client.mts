@@ -97,8 +97,8 @@ async function heroGraphQL<T>(query: string, variables?: Record<string, unknown>
 }
 
 const PROJECT_MATCHES_QUERY = /* GraphQL */ `
-  query OpenOfferProjectMatches($statuses: [Int], $measure_ids: [Int], $first: Int, $offset: Int) {
-    project_matches(statuses: $statuses, measure_ids: $measure_ids, first: $first, offset: $offset) {
+  query OpenOfferProjectMatches($statuses: [Int], $measure_ids: [Int], $ids: [Int], $first: Int, $offset: Int) {
+    project_matches(statuses: $statuses, measure_ids: $measure_ids, ids: $ids, first: $first, offset: $offset) {
       id
       project_nr
       measure {
@@ -140,6 +140,7 @@ const PROJECT_MATCHES_QUERY = /* GraphQL */ `
 export interface ProjectMatchFilter {
   statuses?: number[];
   measureIds?: number[];
+  ids?: number[];
 }
 
 const PAGE_SIZE = 200;
@@ -166,6 +167,7 @@ export async function fetchProjectMatches(filter?: ProjectMatchFilter): Promise<
     const variables: Record<string, unknown> = { first: PAGE_SIZE, offset: page * PAGE_SIZE };
     if (filter?.statuses && filter.statuses.length > 0) variables.statuses = filter.statuses;
     if (filter?.measureIds && filter.measureIds.length > 0) variables.measure_ids = filter.measureIds;
+    if (filter?.ids && filter.ids.length > 0) variables.ids = filter.ids;
 
     const data = await heroGraphQL<{ project_matches: HeroProjectMatch[] }>(PROJECT_MATCHES_QUERY, variables);
     const batch = data.project_matches ?? [];
