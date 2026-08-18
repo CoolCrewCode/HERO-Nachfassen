@@ -146,8 +146,8 @@ export interface ProjectMatchFilter {
   ids?: number[];
 }
 
-const PAGE_SIZE = 200;
-const MAX_PAGES = 20; // Sicherheitsgrenze (= max. 4000 project_matches), gegen Endlosschleifen
+const PAGE_SIZE = 500;
+const MAX_PAGES = 20; // Sicherheitsgrenze (= max. 10000 project_matches), gegen Endlosschleifen
 
 /**
  * Holt project_matches samt Kategorie (measure), Status, Angebots-Dokumenten und
