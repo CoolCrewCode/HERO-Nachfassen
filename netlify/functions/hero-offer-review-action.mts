@@ -69,16 +69,14 @@ export default async (req: Request): Promise<Response> => {
     return htmlPage("Fehler", `<p>Die HERO-Daten konnten nicht geladen werden: ${escapeHtml(String(err))}</p>`);
   }
 
-  const match = matches.find((m) => m.id === matchId);
+  // HERO liefert die id als Zahl zurück, matchId aus der URL ist ein String – deshalb hier
+  // beide als String vergleichen (sonst schlägt der Vergleich immer fehl, siehe status_code-Bug).
+  const match = matches.find((m) => String(m.id) === matchId);
   if (!match) {
     return htmlPage(
       "Nicht gefunden",
       "<p>Dieses Projekt wurde in HERO nicht gefunden. Das passiert meist, wenn es zwischenzeitlich bereits " +
-        "geschlossen/archiviert wurde — dann ist ohnehin keine Nachfass-Mail mehr nötig, es ist also alles in Ordnung.</p>" +
-        `<p style="color:#888;font-size:0.8rem">Debug: gesucht wurde matchId=${escapeHtml(matchId)} ` +
-        `(als Zahl: ${matchIdNum}). Die ids-Filter-Abfrage lieferte ${matches.length} Ergebnis(se) zurück` +
-        (matches.length > 0 ? `: [${matches.map((m) => escapeHtml(m.id)).join(", ")}]` : "") +
-        `.</p>`
+        "geschlossen/archiviert wurde — dann ist ohnehin keine Nachfass-Mail mehr nötig, es ist also alles in Ordnung.</p>"
     );
   }
 
