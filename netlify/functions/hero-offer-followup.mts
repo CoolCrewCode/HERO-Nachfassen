@@ -5,78 +5,19 @@ import {
   introspectObjectTypeFields,
   fetchProjectTypes,
   testAddLogbookEntry,
-  type HeroDocument,
-  type HeroProjectMatch,
 } from "../../lib/hero-client.mts";
 import { sendGraphMail } from "../../lib/graph-mailer.mts";
-import {
-  alreadyHandled,
-  alreadyProposed,
-  buildReviewSubject,
-  buildReviewBody,
-  buildProposedMarker,
-  type ReviewCandidate,
-} from "../../lib/mail-template.mts";
-import { buildApprovalLink } from "../../lib/approval.mts";
-
-// ---------------------------------------------------------------------------
-// Konfiguration über Env-Vars (siehe .env.example)
-// ---------------------------------------------------------------------------
-
-const FOLLOWUP_AFTER_DAYS = Number(process.env.HERO_FOLLOWUP_DAYS ?? 7);
-
-// Status-Codes, die als "offenes Angebot, wartet auf Kundenantwort" gelten.
-// Kommagetrennt, z.B. "OFFER_SENT,QUOTE_SENT". Muss pro HERO-Account einmalig
-// über den Discovery-Modus (HERO_DISCOVERY=true) ermittelt werden.
-const OPEN_STATUS_CODES = (process.env.HERO_OPEN_STATUS_CODES ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-// HERO-Kategorien ("measure"), z.B. Projekte/Reparaturen/Montagen/Wartung. Nur Angebote
-// aus diesen Kategorien berücksichtigen (kommagetrennte measure-IDs). Leer = alle Kategorien.
-const MEASURE_IDS = (process.env.HERO_MEASURE_IDS ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-// customer_documents.type-Wert, der ein Angebot kennzeichnet (z.B. "OFFER" oder "ANGEBOT").
-// Ebenfalls per Discovery-Modus ermitteln.
-const OFFER_DOCUMENT_TYPE = process.env.HERO_OFFER_DOCUMENT_TYPE?.trim() ?? "";
+import { fetchDueCandidates, type Candidate } from "../../lib/candidates.mts";
+import { alreadyProposed, buildProposedMarker, buildNotificationSubject, buildNotificationBody } from "../../lib/mail-template.mts";
+import { buildDashboardLink } from "../../lib/approval.mts";
 
 const DISCOVERY_MODE = process.env.HERO_DISCOVERY === "true";
 const DRY_RUN = process.env.DRY_RUN === "true";
 const DEBUG = process.env.DEBUG === "true";
 
-// ---------------------------------------------------------------------------
+async function runDiscovery(): Promise<Response> {
+  const matches = await fetchProjectMatches(); // bewusst ungefiltert, um alle Status/Kategorien zu sehen
 
-function daysSince(iso: string): number {
-  const ms = Date.now() - new Date(iso).getTime();
-  return ms / (1000 * 60 * 60 * 24);
-}
-
-function latestOfferDocument(docs: HeroDocument[]): HeroDocument | null {
-  const offers = OFFER_DOCUMENT_TYPE ? docs.filter((d) => d.type === OFFER_DOCUMENT_TYPE) : docs;
-  if (offers.length === 0) return null;
-  return offers.reduce((latest, d) => (new Date(d.created) > new Date(latest.created) ? d : latest));
-}
-
-function isOpenStatus(match: HeroProjectMatch): boolean {
-  if (OPEN_STATUS_CODES.length === 0) return true; // ungefiltert, solange nicht konfiguriert
-  const code = match.current_project_match_status?.status_code;
-  // HERO liefert status_code als Zahl, HERO_OPEN_STATUS_CODES ist eine Liste von Strings –
-  // deshalb hier explizit als String vergleichen (sonst schlägt der Vergleich immer fehl).
-  return code !== undefined && code !== null && OPEN_STATUS_CODES.includes(String(code));
-}
-
-function recipientOf(match: HeroProjectMatch): { email: string; name: string | null } | null {
-  const person = match.contact ?? match.customer;
-  if (!person?.email) return null;
-  const name = [person.first_name, person.last_name].filter(Boolean).join(" ") || null;
-  return { email: person.email, name };
-}
-
-async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
   const statusCodes = new Map<string, string>(); // status_code -> name
   const documentTypes = new Set<string>();
   const measures = new Map<string, string>(); // measure_id -> name/short
@@ -99,10 +40,6 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
     introspection = { error: String(err) };
   }
 
-  // "Montagen" tauchte nicht unter den measures auf – vermutlich eine andere Dimension
-  // (project_matches(type_ids: [Int])). Rückgabetyp von project_matches introspizieren, um
-  // dessen lesbare Felder zu sehen (z.B. ein "type"/"project_type"-Feld), und project_types
-  // direkt abfragen (Feldnamen id/name sind eine Annahme, Fehler zeigt die echten Namen).
   let projectMatchFields: string[] | { error: string } | null = null;
   if ("projectMatches" in introspection && introspection.projectMatches?.returnType) {
     const baseTypeName = introspection.projectMatches.returnType.replace(/[![\]]/g, "");
@@ -120,7 +57,6 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
     projectTypes = { error: String(err) };
   }
 
-  // Sanity-Check: schreibt einen Testeintrag über die (jetzt bestätigte) echte Mutation.
   let addLogbookEntryTest: { ok: true } | { ok: false; error: string } | { ok: null; reason: string } = {
     ok: null,
     reason: "Kein project_match vorhanden, um zu testen.",
@@ -161,29 +97,31 @@ async function runDiscovery(matches: HeroProjectMatch[]): Promise<Response> {
 }
 
 export default async (): Promise<Response> => {
-  if (!OFFER_DOCUMENT_TYPE && !DISCOVERY_MODE) {
-    console.warn(
-      "HERO_OFFER_DOCUMENT_TYPE ist nicht gesetzt – es wird das jeweils neueste customer_document " +
-        "jedes project_match als 'Angebot' behandelt, unabhängig vom Typ. Zum Ermitteln des korrekten " +
-        "Typs HERO_DISCOVERY=true setzen."
-    );
-  }
-  if (OPEN_STATUS_CODES.length === 0 && !DISCOVERY_MODE) {
-    console.warn(
-      "HERO_OPEN_STATUS_CODES ist nicht gesetzt – es werden project_matches unabhängig vom Status " +
-        "berücksichtigt. Zum Ermitteln der korrekten Codes HERO_DISCOVERY=true setzen."
-    );
+  if (DISCOVERY_MODE) {
+    try {
+      return await runDiscovery();
+    } catch (err) {
+      console.error("Fehler beim Discovery-Lauf:", err);
+      return new Response(JSON.stringify({ error: String(err) }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
+    }
   }
 
-  // Im Discovery-Modus bewusst ungefiltert laden, um alle vorkommenden Status/Kategorien
-  // zu sehen. Im Normalbetrieb serverseitig auf Status + Kategorie (measure) einschränken.
-  const filter = DISCOVERY_MODE
-    ? undefined
-    : { statuses: OPEN_STATUS_CODES.map(Number), measureIds: MEASURE_IDS.map(Number) };
+  const reviewTo = process.env.MAIL_REVIEW_TO?.trim();
+  if (!reviewTo) {
+    const msg = "MAIL_REVIEW_TO ist nicht gesetzt – ohne Empfänger kann keine Benachrichtigung verschickt werden.";
+    console.error(msg);
+    return new Response(JSON.stringify({ error: msg }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
 
-  let matches: HeroProjectMatch[];
+  let result: Awaited<ReturnType<typeof fetchDueCandidates>>;
   try {
-    matches = await fetchProjectMatches(filter);
+    result = await fetchDueCandidates(DEBUG);
   } catch (err) {
     console.error("Fehler beim Laden der HERO-Angebote:", err);
     return new Response(JSON.stringify({ error: String(err) }), {
@@ -192,113 +130,32 @@ export default async (): Promise<Response> => {
     });
   }
 
-  if (DISCOVERY_MODE) {
-    return runDiscovery(matches);
-  }
+  // Kandidaten, die noch nie gemeldet wurden, weisen auf "wirklich neu" hin – beeinflusst nur
+  // den Betreff/Text der Benachrichtigung. Verschickt wird die Mail (mit Link zur
+  // Übersichtsseite), sobald überhaupt etwas offen ist, damit der Übersichts-Link jederzeit
+  // erreichbar bleibt (auch wenn gerade nichts Neues dazugekommen ist).
+  const newCandidates: Candidate[] = result.due.filter((c) => !alreadyProposed(c.match));
 
-  const reviewTo = process.env.MAIL_REVIEW_TO?.trim();
-  if (!reviewTo) {
-    const msg = "MAIL_REVIEW_TO ist nicht gesetzt – ohne Empfänger kann keine Freigabe-Mail verschickt werden.";
-    console.error(msg);
-    return new Response(JSON.stringify({ error: msg }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    });
-  }
-
-  let checked = 0;
-  let due = 0;
-  let skippedNotOpenStatus = 0;
-  let skippedNoOfferDoc = 0;
-  let skippedTooRecent = 0;
-  let skippedAlreadyHandled = 0;
-  let skippedAlreadyProposed = 0;
-  let skippedNoEmail = 0;
-  const candidates: ReviewCandidate[] = [];
-
-  for (const match of matches) {
-    checked++;
-
-    const offerForDebug = latestOfferDocument(match.customer_documents);
-    if (DEBUG) {
-      console.log(
-        `DEBUG ${match.project_nr}: measure=${match.measure?.id} (${match.measure?.name ?? match.measure?.short}) ` +
-          `status=${match.current_project_match_status?.status_code} ` +
-          `(${match.current_project_match_status?.name}) ` +
-          `dokumente=[${match.customer_documents.map((d) => d.type).join(",")}] ` +
-          `angebotGefunden=${!!offerForDebug} ` +
-          (offerForDebug ? `angebotDatum=${offerForDebug.created} tageAlt=${daysSince(offerForDebug.created).toFixed(1)}` : "")
-      );
-    }
-
-    if (!isOpenStatus(match)) {
-      skippedNotOpenStatus++;
-      continue;
-    }
-
-    const offer = latestOfferDocument(match.customer_documents);
-    if (!offer) {
-      skippedNoOfferDoc++;
-      continue;
-    }
-
-    if (daysSince(offer.created) < FOLLOWUP_AFTER_DAYS) {
-      skippedTooRecent++;
-      continue;
-    }
-
-    due++;
-
-    if (alreadyHandled(match)) {
-      skippedAlreadyHandled++;
-      continue;
-    }
-
-    if (alreadyProposed(match)) {
-      skippedAlreadyProposed++;
-      continue;
-    }
-
-    const recipient = recipientOf(match);
-    if (!recipient) {
-      skippedNoEmail++;
-      console.warn(`Kein E-Mail-Kontakt für project_match ${match.id} (${match.project_nr}) gefunden.`);
-      continue;
-    }
-
-    candidates.push({
-      matchId: match.id,
-      toName: recipient.name,
-      toEmail: recipient.email,
-      projectNr: match.project_nr,
-      offer,
-      sendLink: buildApprovalLink(match.id, offer.nr, "send"),
-      skipLink: buildApprovalLink(match.id, offer.nr, "skip"),
-    });
-  }
-
-  let reviewMailSent = false;
-  if (!DRY_RUN && candidates.length > 0) {
+  let notificationSent = false;
+  if (!DRY_RUN && result.due.length > 0) {
     await sendGraphMail({
       toEmail: reviewTo,
       toName: null,
-      subject: buildReviewSubject(candidates.length),
-      body: buildReviewBody(candidates),
+      subject: buildNotificationSubject(newCandidates.length, result.due.length),
+      body: buildNotificationBody(newCandidates.length, result.due.length, buildDashboardLink()),
     });
-    reviewMailSent = true;
+    notificationSent = true;
 
-    // Markiert die Angebote als "zur Freigabe vorgeschlagen", damit sie nicht jeden Tag
-    // erneut in einer neuen Übersichts-Mail auftauchen, solange noch keine Entscheidung fiel.
     // Parallel (statt nacheinander) schreiben, sonst droht bei vielen Kandidaten das
-    // 30-Sekunden-Zeitlimit von Netlify Functions (bei 111 Kandidaten sequenziell: ~30s).
+    // 30-Sekunden-Zeitlimit von Netlify Functions.
     const now = new Date().toISOString();
     const MARKER_WRITE_CONCURRENCY = 10;
-    for (let i = 0; i < candidates.length; i += MARKER_WRITE_CONCURRENCY) {
-      const batch = candidates.slice(i, i + MARKER_WRITE_CONCURRENCY);
+    for (let i = 0; i < newCandidates.length; i += MARKER_WRITE_CONCURRENCY) {
+      const batch = newCandidates.slice(i, i + MARKER_WRITE_CONCURRENCY);
       await Promise.all(
         batch.map((c) =>
-          addLogbookEntry(c.matchId, buildProposedMarker(now)).catch((err) => {
-            console.error(`Konnte 'vorgeschlagen'-Vermerk nicht schreiben für ${c.projectNr}:`, err);
+          addLogbookEntry(c.match.id, buildProposedMarker(now)).catch((err) => {
+            console.error(`Konnte 'vorgeschlagen'-Vermerk nicht schreiben für ${c.match.project_nr}:`, err);
           })
         )
       );
@@ -306,20 +163,19 @@ export default async (): Promise<Response> => {
   }
 
   const summary = {
-    checked,
-    due,
-    candidatesInReviewMail: candidates.length,
-    reviewMailSent,
-    skippedNotOpenStatus,
-    skippedNoOfferDoc,
-    skippedTooRecent,
-    skippedAlreadyHandled,
-    skippedAlreadyProposed,
-    skippedNoEmail,
+    checked: result.checked,
+    dueTotal: result.due.length,
+    newSinceLastRun: newCandidates.length,
+    notificationSent,
+    skippedNotOpenStatus: result.skippedNotOpenStatus,
+    skippedNoOfferDoc: result.skippedNoOfferDoc,
+    skippedTooRecent: result.skippedTooRecent,
+    skippedAlreadySent: result.skippedAlreadySent,
+    skippedNoEmail: result.skippedNoEmail,
     dryRun: DRY_RUN,
   };
 
-  console.log("HERO Angebots-Nachfassen (Übersicht) abgeschlossen:", JSON.stringify(summary));
+  console.log("HERO Angebots-Nachfassen abgeschlossen:", JSON.stringify(summary));
 
   return new Response(JSON.stringify(summary, null, 2), {
     headers: { "content-type": "application/json" },

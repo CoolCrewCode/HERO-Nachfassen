@@ -86,58 +86,48 @@ export function buildProposedMarker(sentAtIso: string): string {
   return `✉️ ${PROPOSED_MARKER_SUBSTRING} am ${formatDate(sentAtIso)}`;
 }
 
-// Bereits erledigt (verschickt oder bewusst übersprungen) – wird nicht erneut vorgeschlagen.
-export function alreadyHandled(match: HeroProjectMatch): boolean {
-  return match.histories.some((h) => {
-    const text = h.custom_text ?? "";
-    return text.includes(SENT_MARKER_SUBSTRING) || text.includes(SKIP_MARKER_SUBSTRING);
-  });
+// Mail wurde bereits an den Kunden verschickt – endgültig, kann nicht rückgängig gemacht werden.
+export function alreadySent(match: HeroProjectMatch): boolean {
+  return match.histories.some((h) => (h.custom_text ?? "").includes(SENT_MARKER_SUBSTRING));
 }
 
-// Bereits in einer früheren Übersichts-Mail zur Freigabe vorgeschlagen (verhindert, dass
-// dieselbe Anfrage jeden Tag erneut in der Übersichts-Mail auftaucht).
+// Bewusst übersprungen – das ist eine Zwischenentscheidung, keine endgültige: Wer sich umentscheidet,
+// kann trotzdem noch auf "Ja" klicken (siehe hero-offer-review-action.mts).
+export function alreadySkipped(match: HeroProjectMatch): boolean {
+  return match.histories.some((h) => (h.custom_text ?? "").includes(SKIP_MARKER_SUBSTRING));
+}
+
+// Bereits in einer früheren Benachrichtigung als "neu" gemeldet (verhindert, dass dieselbe Anfrage
+// jeden Tag erneut als "X neue Angebote" gemeldet wird, solange noch keine Entscheidung fiel). Die
+// Übersichtsseite selbst filtert NICHT danach – dort bleibt alles sichtbar, was noch nicht final ist.
 export function alreadyProposed(match: HeroProjectMatch): boolean {
   return match.histories.some((h) => (h.custom_text ?? "").includes(PROPOSED_MARKER_SUBSTRING));
 }
 
 // ---------------------------------------------------------------------------
-// Übersichts-/Freigabe-Mail an den Reviewer (z.B. Robert)
+// Kurze Benachrichtigungs-Mail an den Reviewer (z.B. Robert) – verlinkt auf die Übersichtsseite,
+// statt alle Kandidaten einzeln in der Mail aufzulisten (bei vielen Angeboten sonst unübersichtlich
+// und man verliert den Überblick, was schon entschieden wurde).
 // ---------------------------------------------------------------------------
 
-export interface ReviewCandidate {
-  matchId: string;
-  toName: string | null;
-  toEmail: string;
-  projectNr: string;
-  offer: HeroDocument;
-  sendLink: string;
-  skipLink: string;
+export function buildNotificationSubject(newCount: number, totalCount: number): string {
+  if (newCount > 0) return `${newCount} neue Angebot(e) bereit zum Nachfassen (${totalCount} insgesamt offen)`;
+  return `Erinnerung: ${totalCount} Angebot(e) warten noch auf deine Entscheidung`;
 }
 
-export function buildReviewSubject(count: number): string {
-  return `${count} Angebot(e) bereit zum Nachfassen – bitte prüfen`;
-}
+export function buildNotificationBody(newCount: number, totalCount: number, dashboardLink: string): string {
+  const intro =
+    newCount > 0
+      ? `${newCount} weitere Angebot(e) sind seit mindestens ${process.env.HERO_FOLLOWUP_DAYS ?? 7} Tagen ` +
+        `ohne Rückmeldung dazugekommen. Insgesamt warten aktuell ${totalCount} Angebot(e) auf deine Entscheidung.`
+      : `Es sind aktuell ${totalCount} Angebot(e) offen, die noch auf deine Entscheidung warten.`;
 
-export function buildReviewBody(candidates: ReviewCandidate[]): string {
-  const intro = [
-    `Es sind ${candidates.length} Angebot(e) seit mindestens ${process.env.HERO_FOLLOWUP_DAYS ?? 7} Tagen ohne Rückmeldung.`,
-    "Bitte für jedes Angebot entscheiden, ob nachgefasst werden soll (z.B. wenn es zwischenzeitlich schon",
-    "persönlichen Kontakt gab, lieber überspringen).",
+  return [
+    intro,
     "",
-  ];
-
-  const blocks = candidates.map((c) => {
-    const name = c.toName ?? c.toEmail;
-    const value = c.offer.value !== null ? formatCurrency(c.offer.value) : "";
-    return [
-      `— Angebot ${c.offer.nr} (Projekt ${c.projectNr})`,
-      `  Kunde: ${name} <${c.toEmail}>`,
-      `  Versendet am: ${formatDate(c.offer.created)}${value ? `, Wert: ${value}` : ""}`,
-      `  ✅ Ja, jetzt nachfassen:  ${c.sendLink}`,
-      `  🚫 Nein, überspringen:   ${c.skipLink}`,
-      "",
-    ].join("\n");
-  });
-
-  return [...intro, ...blocks].join("\n");
+    "Alle noch offenen Angebote findest du hier – bereits entschiedene verschwinden automatisch " +
+      "aus der Liste:",
+    "",
+    dashboardLink,
+  ].join("\n");
 }

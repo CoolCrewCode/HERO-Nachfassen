@@ -1,6 +1,13 @@
 import { fetchProjectMatches, addLogbookEntry, type HeroProjectMatch } from "../../lib/hero-client.mts";
 import { sendGraphMail } from "../../lib/graph-mailer.mts";
-import { buildSubject, buildBody, buildSentMarker, buildSkipMarker, alreadyHandled } from "../../lib/mail-template.mts";
+import {
+  buildSubject,
+  buildBody,
+  buildSentMarker,
+  buildSkipMarker,
+  alreadySent,
+  alreadySkipped,
+} from "../../lib/mail-template.mts";
 import { verifySignature, type ApprovalAction } from "../../lib/approval.mts";
 
 function escapeHtml(text: string): string {
@@ -66,11 +73,23 @@ export default async (req: Request): Promise<Response> => {
     );
   }
 
-  if (alreadyHandled(match)) {
+  // Verschickt ist endgültig (die Mail ist raus, das lässt sich nicht zurückholen).
+  if (alreadySent(match)) {
     return htmlPage(
       "Bereits erledigt",
-      `<p>Für Angebot ${escapeHtml(offerNr)} (Projekt ${escapeHtml(match.project_nr)}) wurde bereits eine ` +
-        "Entscheidung getroffen — es passiert nichts Weiteres.</p>"
+      `<p>Für Angebot ${escapeHtml(offerNr)} (Projekt ${escapeHtml(match.project_nr)}) wurde die Nachfass-Mail ` +
+        "bereits verschickt — es passiert nichts Weiteres.</p>"
+    );
+  }
+
+  // "Übersprungen" ist dagegen eine Zwischenentscheidung: Ein erneuter Klick auf "Nein" ist einfach
+  // idempotent, aber ein Klick auf "Ja" nach vorherigem "Nein" wird bewusst zugelassen (Umentscheiden
+  // soll möglich sein, z.B. wenn sich die Lage beim Kunden doch wieder geändert hat).
+  if (action === "skip" && alreadySkipped(match)) {
+    return htmlPage(
+      "Bereits übersprungen",
+      `<p>Für Angebot ${escapeHtml(offerNr)} (Projekt ${escapeHtml(match.project_nr)}) hattest du schon ` +
+        "entschieden, nicht nachzufassen — es passiert nichts Weiteres.</p>"
     );
   }
 
@@ -80,13 +99,15 @@ export default async (req: Request): Promise<Response> => {
   }
 
   const now = new Date().toISOString();
+  const isReversal = action === "send" && alreadySkipped(match);
 
   if (action === "skip") {
     await addLogbookEntry(match.id, buildSkipMarker(now));
     return htmlPage(
       "Übersprungen",
       `<p>Für Angebot ${escapeHtml(offer.nr)} (Projekt ${escapeHtml(match.project_nr)}) wird nicht nachgefasst. ` +
-        "Das ist in HERO vermerkt.</p>"
+        "Das ist in HERO vermerkt. Falls sich das noch ändert, kannst du jederzeit auf denselben \"Ja\"-Link " +
+        "aus der E-Mail klicken, um das rückgängig zu machen.</p>"
     );
   }
 
@@ -107,9 +128,14 @@ export default async (req: Request): Promise<Response> => {
     const confirmUrl = new URL(req.url);
     confirmUrl.searchParams.set("confirm", "1");
 
+    const reversalNote = isReversal
+      ? `<p>ℹ️ Du hattest dieses Angebot zuvor übersprungen — mit "Ja" wird das jetzt rückgängig gemacht.</p>`
+      : "";
+
     return htmlPage(
       "Vorschau – noch nicht verschickt",
-      `<p>Diese Mail würde an <strong>${escapeHtml(recipient.name ?? recipient.email)}</strong> ` +
+      reversalNote +
+        `<p>Diese Mail würde an <strong>${escapeHtml(recipient.name ?? recipient.email)}</strong> ` +
         `(${escapeHtml(recipient.email)}) verschickt werden:</p>` +
         `<div class="preview"><dl>` +
         `<dt>Betreff</dt><dd>${escapeHtml(subject)}</dd>` +

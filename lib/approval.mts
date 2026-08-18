@@ -48,3 +48,19 @@ export function buildApprovalLink(matchId: string, offerNr: string, action: Appr
   const params = new URLSearchParams({ action, matchId, offerNr, sig: signature });
   return `${getBaseUrl()}/.netlify/functions/hero-offer-review-action?${params.toString()}`;
 }
+
+const DASHBOARD_PAYLOAD = "dashboard";
+
+/** Ein fester, merkbarer Link zur Übersichtsseite (nicht an ein einzelnes Angebot gebunden). */
+export function buildDashboardLink(): string {
+  const params = new URLSearchParams({ key: sign(DASHBOARD_PAYLOAD) });
+  return `${getBaseUrl()}/.netlify/functions/hero-offer-review-dashboard?${params.toString()}`;
+}
+
+export function verifyDashboardKey(key: string): boolean {
+  const expected = sign(DASHBOARD_PAYLOAD);
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(key, "hex");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
